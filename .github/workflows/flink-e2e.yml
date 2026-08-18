@@ -167,6 +167,18 @@ jobs:
           classloader:
             parent-first-patterns:
               additional: org.apache.kafka
+          env:
+            java:
+              opts:
+                # DEFECT 5: Flink 1.20 reflects into java.util during static
+                # initialisation and dies with InaccessibleObjectException on
+                # any JDK with the module system enforced. These flags were
+                # added when the defect first appeared locally, then lost when
+                # DEFECT 4's fix replaced the whole config file rather than
+                # appending to it — the same bug reappeared one step later in
+                # the pipeline. They apply to the cluster JVMs; the client JVM
+                # needs FLINK_ENV_JAVA_OPTS separately, set in the submit step.
+                all: "--add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/java.text=ALL-UNNAMED --add-opens=java.base/java.time=ALL-UNNAMED"
           CONF
           mkdir -p /tmp/flink-ckpt
           echo "--- effective config ---"; cat "$F/conf/config.yaml"
@@ -177,6 +189,12 @@ jobs:
         id: submit
         run: |
           F=/tmp/flink-${FLINK_VERSION}
+
+          # The client JVM needs the same module opens as the cluster JVMs.
+          # env.java.opts.all in config.yaml covers the JobManager and
+          # TaskManager; the `flink run` client reads FLINK_ENV_JAVA_OPTS.
+          export FLINK_ENV_JAVA_OPTS="--add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
+
           # DEFECT 3 is fixed in code, not here: Flink's Kafka sink defaults
           # transaction.timeout.ms to 1h while the broker caps it at 15m, so
           # exactly-once producers cannot initialise. Connectors.scala sets it
