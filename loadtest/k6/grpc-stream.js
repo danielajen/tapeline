@@ -24,15 +24,24 @@ const quoteFreshness = new Trend('quote_freshness_us');
 const client = new grpc.Client();
 client.load(['../../proto'], 'tapeline/v1/marketdata.proto');
 
+// The full run is 500 subscribers over five minutes. CI runs a smaller,
+// shorter version of the same shape: a hosted runner has 4 vCPU shared with
+// Kafka, Postgres, Redis, ClickHouse and the server under test, so 500 VUs
+// there would measure the runner rather than the server. The scenario is
+// parameterised rather than duplicated so CI cannot drift from the real test.
+const PEAK = Number(__ENV.PEAK_VUS || 500);
+const HOLD = __ENV.HOLD || '3m';
+const HOLD_SECONDS = Number(__ENV.HOLD_SECONDS || 180);
+
 export const options = {
   scenarios: {
     subscribers: {
       executor: 'ramping-vus',
       startVUs: 0,
       stages: [
-        { target: 100, duration: '30s' },
-        { target: 500, duration: '1m' },
-        { target: 500, duration: '3m' },   // the measurement window
+        { target: Math.ceil(PEAK / 5), duration: '30s' },
+        { target: PEAK, duration: '1m' },
+        { target: PEAK, duration: HOLD },   // the measurement window
         { target: 0, duration: '30s' },
       ],
       gracefulRampDown: '30s',
@@ -115,7 +124,7 @@ export default function () {
   // Hold the subscription open. This is the point of the test: streams that
   // are opened and closed immediately measure connection setup, not the
   // sustained fan-out cost.
-  sleep(30);
+  sleep(Math.min(30, HOLD_SECONDS));
 
   stream.end();
   check(received, { 'received at least one quote': (n) => n > 0 });
@@ -139,5 +148,11 @@ first-quote p95 (ms)      ${get('first_quote_latency', 'p(95)')}
 freshness p99 (us)        ${get('quote_freshness_us', 'p(99)')}
 `,
     'loadtest/results/grpc-stream.json': JSON.stringify(data, null, 2),
+    // A flat file CI can assert on without parsing the whole k6 summary.
+    'loadtest/results/grpc-stream-summary.txt':
+      `quotes_received=${m.quotes_received ? m.quotes_received.values.count : 0}\n` +
+      `peak_streams=${get('vus_max', 'value')}\n` +
+      `first_quote_p95_ms=${get('first_quote_latency', 'p(95)')}\n` +
+      `freshness_p99_us=${get('quote_freshness_us', 'p(99)')}\n`,
   };
 }
