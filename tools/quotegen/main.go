@@ -50,6 +50,22 @@ type bookDelta struct {
 	Sequence     int64   `avro:"sequence"`
 }
 
+// A trade, mirroring ingest/schemas/avro/trade.v1.avsc. Needed so the job
+// layout comparison can drive the trades stage and the book stage at once:
+// the whole point of that measurement is two stages with different state
+// profiles sharing one checkpoint, which a book-only workload cannot show.
+type trade struct {
+	Venue        string  `avro:"venue"`
+	Symbol       string  `avro:"symbol"`
+	TradeID      string  `avro:"trade_id"`
+	Price        float64 `avro:"price"`
+	Size         float64 `avro:"size"`
+	Side         string  `avro:"side"`
+	EventTimeUS  int64   `avro:"event_time_us"`
+	IngestTimeUS int64   `avro:"ingest_time_us"`
+	Sequence     int64   `avro:"sequence"`
+}
+
 type quote struct {
 	Venue       string  `avro:"venue"`
 	Symbol      string  `avro:"symbol"`
@@ -76,7 +92,7 @@ func main() {
 	rate := flag.Int("rate", 500, "quotes per second")
 	dur := flag.Duration("duration", 60*time.Second, "how long to run")
 	schemaPath := flag.String("schema", "stream/src/main/resources/avro/quote.v1.avsc", "path to the Avro schema")
-	kind := flag.String("kind", "quote", "what to generate: quote | book")
+	kind := flag.String("kind", "quote", "what to generate: quote | book | trade")
 	flag.Parse()
 
 	if *schemaID == 0 {
@@ -202,6 +218,36 @@ func main() {
 				payload, err := avro.Marshal(schema, &d)
 				if err != nil {
 					log.Fatalf("marshal book delta: %v", err)
+				}
+				batch = append(batch, kafka.Message{
+					Key:   []byte(sym),
+					Value: append(append([]byte{}, header...), payload...),
+				})
+				sent++
+				if len(batch) >= 200 {
+					if err := w.WriteMessages(context.Background(), batch...); err != nil {
+						log.Printf("write: %v", err)
+					}
+					batch = batch[:0]
+				}
+				continue
+			}
+
+			if *kind == "trade" {
+				side := "BUY"
+				if rand.Intn(2) == 0 {
+					side = "SELL"
+				}
+				t := trade{
+					Venue: ven, Symbol: sym,
+					TradeID: fmt.Sprintf("%s-%d", ven, sent),
+					Price:   round2(mid), Size: 0.01 + rand.Float64(),
+					Side:        side,
+					EventTimeUS: now, IngestTimeUS: now, Sequence: int64(sent),
+				}
+				payload, err := avro.Marshal(schema, &t)
+				if err != nil {
+					log.Fatalf("marshal trade: %v", err)
 				}
 				batch = append(batch, kafka.Message{
 					Key:   []byte(sym),
