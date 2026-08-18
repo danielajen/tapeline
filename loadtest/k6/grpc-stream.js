@@ -54,10 +54,20 @@ export const options = {
     // snapshot on subscribe precisely so this stays small; if it regresses,
     // the snapshot-on-open path has broken.
     //
-    // Resolution is one hold slice (50 ms by default), because that is how
-    // often the VU's event loop can observe an arriving message. A threshold
-    // tighter than the resolution would be measuring nothing.
-    'first_quote_latency': ['p(95)<500'],
+    // NOT thresholded, and the metric is reported for information only.
+    //
+    // Two runs put this at ~30,000 ms with a 30-second hold, and slicing the
+    // sleep into 50 ms pieces did not move it - so the first hypothesis, that
+    // a blocking sleep starved the event loop, was wrong. Whatever the cause,
+    // this harness times the hold rather than the server, and a metric that
+    // reproduces the hold duration to four significant figures is not
+    // measuring latency.
+    //
+    // It stays in the output because the number is real evidence of
+    // something; it is not asserted on, because asserting on a number whose
+    // meaning is unknown is how this repo ended up chasing an order book bug
+    // that did not exist. Time to first quote remains unmeasured, and is
+    // recorded as unmeasured in MEASUREMENTS.md rather than filled in.
     'grpc_req_duration': ['p(99)<500'],
   },
 };

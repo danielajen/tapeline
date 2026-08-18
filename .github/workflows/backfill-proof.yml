@@ -172,13 +172,23 @@ jobs:
           # printed so a stall is visible while it is happening.
           for i in $(seq 1 10); do
             sleep 15
-            N=$(find /tmp/warehouse -name '*.parquet' 2>/dev/null | wc -l)
-            echo "  t=$((i*15))s parquet=$N states=$(timeout 30 curl -s http://localhost:8090/jobs | head -c 200)"
+            N=$(find /tmp/warehouse -path '*/trades/data/*' -type f 2>/dev/null | wc -l)
+            echo "  t=$((i*15))s datafiles=$N states=$(timeout 30 curl -s http://localhost:8090/jobs | head -c 200)"
           done
 
-          echo "--- warehouse ---"; find /tmp/warehouse -name '*.parquet' | head -20
-          PARQUET=$(find /tmp/warehouse -name '*.parquet' | wc -l)
-          echo "parquet files: $PARQUET"
+          # Count data files by location, not by extension.
+          #
+          # This asserted on '*.parquet' and failed a run in which the
+          # lakehouse job had worked perfectly - the log showed
+          # "Committed append ... dataFilesCount=3, dataFilesRecordCount=8953".
+          # Iceberg's write format is a table property, so the extension is not
+          # something this check gets to assume. Asserting on the wrong
+          # attribute produced another confident zero, which is now the third
+          # time a probe in this repo has done that.
+          echo "--- warehouse ---"; find /tmp/warehouse -type f | head -25
+          DATAFILES=$(find /tmp/warehouse -path '*/trades/data/*' -type f | wc -l)
+          SNAPSHOTS=$(find /tmp/warehouse -name 'v*.metadata.json' | wc -l)
+          echo "data files: $DATAFILES, metadata versions: $SNAPSHOTS"
 
           # Cancelling can block while the Iceberg sink finishes a commit, so
           # this is bounded too. A job left running would only waste slots the
@@ -186,9 +196,10 @@ jobs:
           timeout 120 "$F/bin/flink" cancel "$BARS" || echo "cancel trades timed out"
           timeout 120 "$F/bin/flink" cancel "$LAKE" || echo "cancel lakehouse timed out"
 
-          [ "$PARQUET" -gt 0 ] || {
-            echo "::error::lakehouse wrote no files; nothing to replay"
-            tail -80 /tmp/flink-${FLINK_VERSION}/log/*taskexecutor*.log || true
+          [ "$DATAFILES" -gt 0 ] || {
+            echo "::error::lakehouse committed no data files; nothing to replay"
+            grep -E 'IcebergFilesCommitter|CommitSummary' \
+              /tmp/flink-${FLINK_VERSION}/log/*taskexecutor*.log | tail -20 || true
             exit 1
           }
 

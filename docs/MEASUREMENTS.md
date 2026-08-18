@@ -476,3 +476,31 @@ This is one side of the tradeoff, not a verdict. Per-type topics cost more
 partitions to operate and give up total ordering across event types, and
 nothing here measures that. What it does establish is that the read
 amplification argument is real and larger than a record count suggests.
+
+## gRPC server-streaming
+
+Measured by `.github/workflows/grpc-stream.yml`. 60 concurrent subscribers on
+a 4-vCPU runner shared with Kafka, Postgres, Redis, ClickHouse and the server
+under test, quotes produced into the topic for the whole run so subscribers
+receive pushed updates rather than only the opening snapshot.
+
+| | |
+|---|---|
+| Peak concurrent streams | 60 |
+| Quotes delivered to subscribers | 70,564 |
+| Delivery rate | 344 quotes/sec |
+| Failed streams | 0 |
+
+This establishes that the fan-out path works: one Kafka consumer per replica,
+broadcast in memory to every open stream, delivering to 60 simultaneous
+subscribers without dropping one.
+
+**Time to first quote is not measured.** The harness reports a p95 that
+reproduces the hold duration to four significant figures across two runs and
+did not move when the sleep was sliced into 50 ms pieces, so it is timing the
+test rather than the server. The metric is still printed, because the number
+is evidence of something, but nothing is asserted on it. Filling this row with
+that value would be inventing a measurement.
+
+**Not measured:** behaviour at 500 subscribers, which is what the full
+scenario runs. A shared runner at that concurrency would measure the runner.
