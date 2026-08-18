@@ -263,7 +263,8 @@ Recorded as unresolved rather than rounded up.
   throughput is measured.
 - **Backfill correctness.** The comparison query in `BACKFILL.md` is unrun; it
   depends on the lakehouse job, which depends on a sustained Flink cluster.
-- **Monolith vs per-topic comparison.** Both jobs exist; neither has been run,
+- **Monolith vs per-topic comparison.** Measured; see below.
+  Previously recorded here as: both jobs exist; neither has been run,
   so the checkpoint-duration claim remains unquantified.
 - **Terraform has never been applied** to a live AWS account.
 
@@ -310,19 +311,43 @@ flink run -c io.tapeline.stream.TapelineJob stream/target/tapeline-stream-0.1.0.
 make submit-jobs
 ```
 
+Measured by `.github/workflows/job-layout.yml`. Both layouts read identical
+seeded input on the same cluster: book deltas at 500/s and trades at 50/s for
+30 seconds, a ten-to-one ratio, which is what makes the two stages' state
+profiles diverge in the first place. A 90-second observation window per layout.
+
 | Metric | Monolithic | Per-topic | Source |
 |---|---|---|---|
-| Checkpoint duration p99 | `[measure]` | `[measure]` | `lastCheckpointDuration` |
-| Failed checkpoints per hour | `[measure]` | `[measure]` | `numberOfFailedCheckpoints` |
-| Max sustainable throughput | `[measure]` | `[measure]` | the point where lag starts growing |
-| Restart blast radius | 3 stages | 1 stage | observed |
-| CPU at equal throughput | `[measure]` | `[measure]` | container CPU |
+| Jobs | 1 | 2 | — |
+| Stages in one failure domain | **5** | **2** | job graph |
+| Checkpoints completed | 3 | 3 book / 3 trades | `counts.completed` |
+| Checkpoints failed | 0 | 0 | `counts.failed` |
+| Checkpoint duration avg | **113 ms** | **61 ms** | `end_to_end_duration.avg` |
+| Checkpoint duration max | **232 ms** | **151 ms** | `end_to_end_duration.max` |
+| State persisted per checkpoint | **46,121 B** | **28,186 B** | `state_size.avg` |
+| Max sustainable throughput | not measured | not measured | needs dedicated hardware |
+| CPU at equal throughput | not measured | not measured | needs dedicated hardware |
 
-The honest expectation: the per-topic version will use **more** total CPU and
-have **worse** end-to-end latency, because of the extra Kafka hop. What it
-buys is checkpoint stability and independent failure. If the numbers do not
-show that, the story in the design doc is wrong and needs rewriting — which
-is the point of measuring rather than asserting.
+The per-topic column takes the **worse** of the two jobs for duration, not the
+average: a pipeline is as slow to checkpoint as its slowest independent job,
+and averaging would flatter the split layout by hiding the book job behind the
+trade job. State size sums, because that is the total being persisted.
+
+**What the numbers say.** The monolith checkpoints roughly twice as slowly and
+persists 1.6x the state per checkpoint, at this small scale where nothing is
+under stress. That is the mechanism the design doc describes, visible before
+it becomes a problem: every stage's state is captured on every checkpoint, so
+the interval has to suit the largest one. The blast radius difference needs no
+statistics — a failure anywhere in the monolith restarts five stages,
+including order book state that had nothing to do with the fault.
+
+**What the numbers do not say.** Two rows are left unmeasured rather than
+filled in. Max sustainable throughput and steady-state CPU need sustained load
+on dedicated hardware; a 4-vCPU shared runner over 90 seconds cannot produce
+an honest number for either. The expectation stated before measuring still
+stands and is still untested: the per-topic version should use **more** total
+CPU and have **worse** end-to-end latency because of the extra Kafka hop. What
+it buys is what the table above does show.
 
 ---
 
@@ -423,3 +448,31 @@ actually ran.
 Not measured: throughput under sustained load, recovery time from a real
 TaskManager failure, or behaviour at production parallelism. This is a
 correctness and liveness check, not a benchmark.
+
+## Topic layout: per-type topics vs one monolithic topic
+
+Measured by `.github/workflows/topic-layout.yml`. 40,000 records of each of
+three event types, sized representatively (trade 120 B, book delta 900 B,
+quote 180 B), written once to per-type topics and once to a single topic
+carrying a type header. Equal partition counts on both sides, fixed seed. The
+consumer wants trades only.
+
+| | Per-type | Monolith |
+|---|---|---|
+| Records delivered | 40,000 | 119,998 |
+| Records useful | 40,000 | 40,000 |
+| Bytes fetched | 5,080,000 | 48,838,906 |
+| Elapsed | 16.3 s | 26.2 s |
+
+**Read amplification: 9.61x. Records discarded: 66.7%.**
+
+The byte ratio is far worse than the record ratio, and that is the finding.
+Discarding two thirds of the records sounds like a 3x cost; it is 9.6x,
+because the type this consumer does not want is also the largest. A consumer
+that wants trades pays for everyone else's book deltas, in network transfer
+and decompression, before it can discard them.
+
+This is one side of the tradeoff, not a verdict. Per-type topics cost more
+partitions to operate and give up total ordering across event types, and
+nothing here measures that. What it does establish is that the read
+amplification argument is real and larger than a record count suggests.
