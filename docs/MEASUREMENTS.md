@@ -135,8 +135,8 @@ chain_transfer → 3).
 | Suite | Result |
 |---|---|
 | Go | **76 tests**, race-detector clean, **76%** statement coverage |
-| Scala | **54 tests** |
-| Java unit | **51 tests** |
+| Scala | **55 tests** |
+| Java unit | **55 tests** |
 | Java integration (Testcontainers: real Kafka + Postgres) | **10 tests** |
 
 ---

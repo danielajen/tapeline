@@ -1,0 +1,42 @@
+# Minimal collector: accept OTLP, batch, log.
+#
+# Deliberately not wired to a backend. A collector with a Tempo or Jaeger
+# exporter needs that backend running, and adding two more containers to a
+# stack that already does not fit in 4GB would mean the tracing path could
+# never be demonstrated at all. The debug exporter proves spans arrive and
+# carry the right attributes; swapping in a real exporter is four lines.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+  # Guards the collector itself. Without a limiter a burst of spans can OOM
+  # the collector, which then drops everything including the spans explaining
+  # the burst.
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 75
+    spike_limit_percentage: 20
+
+exporters:
+  debug:
+    verbosity: normal
+    sampling_initial: 5
+    sampling_thereafter: 200
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug]
+  telemetry:
+    logs:
+      level: info

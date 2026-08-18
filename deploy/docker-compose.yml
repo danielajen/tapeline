@@ -217,6 +217,8 @@ services:
       TAPELINE_VENUES: coinbase,kraken,binance
       TAPELINE_METRICS_ADDR: ":9101"
       TAPELINE_LOG_LEVEL: info
+      TAPELINE_OTLP_ENDPOINT: "otel-collector:4317"
+      TAPELINE_TRACE_SAMPLE_RATIO: "0.05"
 
   serving:
     build:
@@ -242,6 +244,22 @@ services:
       TAPELINE_OLAP_URL: jdbc:clickhouse://clickhouse:8123/tapeline
       # Reflection on locally so grpcurl works without a proto file.
       TAPELINE_GRPC_REFLECTION: "true"
+
+  # Receives spans over OTLP from the ingestion tier and, once the Java side
+  # is instrumented, from the serving tier — so one trace spans the Kafka hop
+  # between them. Exports to stdout by default; point it at Tempo or Jaeger by
+  # adding an exporter to otel-collector.yaml.
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.115.1
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./otel/otel-collector.yaml:/etc/otel/config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    deploy:
+      resources:
+        limits: { memory: 200M }
 
   prometheus:
     image: prom/prometheus:v2.55.1

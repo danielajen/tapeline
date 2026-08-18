@@ -174,8 +174,16 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
           cache: maven
 
-      - name: Test
+      - name: Unit tests
         run: mvn -B test
+
+      # Integration tests against a real Kafka broker and a real Postgres via
+      # Testcontainers. GitHub's ubuntu runners ship a Docker daemon, so these
+      # can run in CI even though they are excluded from the default local
+      # build — a suite that cannot run without Docker is a suite people stop
+      # running locally.
+      - name: Integration tests (Testcontainers)
+        run: mvn -B verify -Pintegration
 
       - name: Package
         run: mvn -B package -DskipTests

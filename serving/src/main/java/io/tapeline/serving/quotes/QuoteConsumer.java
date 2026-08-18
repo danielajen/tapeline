@@ -3,7 +3,14 @@ package io.tapeline.serving.quotes;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
+import io.opentelemetry.api.OpenTelemetry;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.SpanKind;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Context;
+import io.opentelemetry.context.Scope;
 import io.tapeline.serving.avro.ConfluentAvroReader;
+import io.tapeline.serving.tracing.Tracing;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -34,6 +41,8 @@ public class QuoteConsumer {
     private final QuoteBroadcaster broadcaster;
     private final Schema readerSchema;
 
+    private final OpenTelemetry otel;
+    private final Tracer tracer;
     private final Counter consumed;
     private final Counter failed;
     private final Timer processing;
@@ -42,7 +51,11 @@ public class QuoteConsumer {
             ConfluentAvroReader avro,
             QuoteCache cache,
             QuoteBroadcaster broadcaster,
-            MeterRegistry meters) {
+            MeterRegistry meters,
+            OpenTelemetry otel,
+            Tracer tracer) {
+        this.otel = otel;
+        this.tracer = tracer;
         this.avro = avro;
         this.cache = cache;
         this.broadcaster = broadcaster;
@@ -71,12 +84,28 @@ public class QuoteConsumer {
     }
 
     private void handle(ConsumerRecord<String, byte[]> record) {
-        try {
+        // Continue the trace the Go ingestion tier started. The context rides
+        // in the record's W3C traceparent header, so the span below is a child
+        // of the one that read the frame off the venue socket — one trace,
+        // two processes, two languages.
+        Context parent = Tracing.extract(otel, record);
+        Span span = tracer.spanBuilder("serving.quote.consume")
+                .setParent(parent)
+                .setSpanKind(SpanKind.CONSUMER)
+                .setAttribute("messaging.source.name", record.topic())
+                .setAttribute("messaging.kafka.partition", record.partition())
+                .setAttribute("messaging.kafka.offset", record.offset())
+                .startSpan();
+
+        try (Scope ignored = span.makeCurrent()) {
             QuoteSnapshot quote = QuoteSnapshot.fromAvro(avro.read(record.value(), readerSchema));
+            span.setAttribute("tapeline.symbol", quote.symbol());
+            span.setAttribute("tapeline.venue", quote.venue());
             cache.put(quote);
             broadcaster.publish(quote);
             consumed.increment();
         } catch (RuntimeException e) {
+            span.recordException(e);
             // A single poison record must not stop the partition. The failure
             // counter is what turns a silent drop into an alertable signal —
             // a sustained non-zero rate here almost always means a schema
@@ -89,6 +118,8 @@ public class QuoteConsumer {
                     record.offset(),
                     ConfluentAvroReader.schemaIdOf(record.value()),
                     e);
+        } finally {
+            span.end();
         }
     }
 

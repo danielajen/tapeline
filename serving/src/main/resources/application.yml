@@ -51,6 +51,12 @@ management:
       application: tapeline-serving
 
 tapeline:
+  # Empty disables tracing entirely, which is a supported configuration: the
+  # unit tests and the local dry-run have no collector and must still work.
+  otlp:
+    endpoint: ${TAPELINE_OTLP_ENDPOINT:}
+    sample-ratio: ${TAPELINE_TRACE_SAMPLE_RATIO:0.05}
+
   schema-registry-url: ${TAPELINE_SCHEMA_REGISTRY_URL:http://localhost:8081}
 
   topics:

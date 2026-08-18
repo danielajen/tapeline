@@ -113,6 +113,30 @@
       <scope>test</scope>
     </dependency>
 
+    <!-- OpenTelemetry. The Go tier writes W3C Trace Context into Kafka record
+         headers; this reads it back, so one trace spans the hop between two
+         processes in two languages. -->
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-api</artifactId>
+      <version>1.45.0</version>
+    </dependency>
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-sdk</artifactId>
+      <version>1.45.0</version>
+    </dependency>
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-exporter-otlp</artifactId>
+      <version>1.45.0</version>
+    </dependency>
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-sdk-extension-autoconfigure</artifactId>
+      <version>1.45.0</version>
+    </dependency>
+
     <!-- Testcontainers: real Kafka, Postgres and Redis in CI, not mocks.
          Mocks assert that this code calls a client the way the author
          expected. These assert that the client, the broker, the SQL and the
