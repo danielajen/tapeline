@@ -136,7 +136,7 @@ make chaos      # kill the broker, a TaskManager, Redis, the network
 
 | Suite | Tests | Notes |
 |---|---|---|
-| Go | 69 | Race detector clean, **76%** statement coverage |
+| Go | 76 | Race detector clean, **76%** statement coverage |
 | Scala | 54 | Order books, rolling stats, aggregates, divergence, codecs |
 | Java | 51 unit + 10 integration | HMAC, replay, rate limiting, fan-out, Avro framing; Testcontainers against real Kafka + Postgres |
 

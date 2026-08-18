@@ -35,7 +35,7 @@ Every number below is measured. The measurement and its source metric are in
 >   aggregates after simulated state loss; deployed on **Kubernetes via
 >   Terraform**-provisioned AWS
 > - **Chaos-tested a mid-stream Kafka broker kill: zero events lost, 20 s to
->   resume publishing**; **69 Go tests race-clean at 76% coverage** plus 115
+>   resume publishing**; **76 Go tests race-clean at 76% coverage** plus 115
 >   JVM tests including Testcontainers integration against real Kafka and
 >   Postgres in GitHub Actions CI
 
@@ -51,7 +51,7 @@ Every number below is measured. The measurement and its source metric are in
 >   **Java/Spring Boot gRPC** streaming API with Redis, **ClickHouse** and
 >   HMAC replay auth
 > - **Chaos-tested broker failure with zero data loss and 20 s recovery**;
->   deployed on **Kubernetes via Terraform**, **76% Go coverage**, 184 tests
+>   deployed on **Kubernetes via Terraform**, **76% Go coverage**, 191 tests
 >   across three languages in CI
 
 ### What is measured versus what is built
@@ -60,7 +60,7 @@ Every number below is measured. The measurement and its source metric are in
 |---|---|
 | 48K events, 0 decode/publish errors | **Measured**, 120 s live run |
 | Zero data loss, 20 s recovery under broker kill | **Measured**, chaos run |
-| 76% Go coverage, 184 tests across 3 languages | **Measured** |
+| 76% Go coverage, 191 tests across 3 languages | **Measured** |
 | FULL-compatibility schema evolution, both directions | **Measured**, live registry + tests |
 | Stateful Flink order books, exactly-once | **Built and unit-tested; never run** |
 | Kappa backfill through shared operators | **Built; correctness query unrun** |
