@@ -122,8 +122,38 @@ jobs:
           find ~/.m2 -name 'flink-connector-kafka-*.jar' -exec cp {} "$F/lib/" \; || true
           find ~/.m2 -name 'kafka-clients-*.jar' ! -name '*sources*' -exec cp {} "$F/lib/" \; || true
 
-          cat >> "$F/conf/config.yaml" <<'CONF'
-          classloader.parent-first-patterns.additional: org.apache.kafka
+          # DEFECT 4: config.yaml is OVERWRITTEN, not appended to.
+          #
+          # Flink 1.20 ships a config.yaml that already defines jobmanager,
+          # taskmanager, state, rest and parallelism as top-level keys.
+          # Appending our own copies produces duplicate top-level YAML keys,
+          # the file stops parsing, and the cluster refuses to start — with an
+          # error about YAML rather than about anything we changed. Writing a
+          # complete config from scratch is the only way to be sure of what
+          # the cluster actually reads.
+          cat > "$F/conf/config.yaml" <<'CONF'
+          jobmanager:
+            rpc:
+              address: localhost
+              port: 6123
+            bind-host: localhost
+            memory:
+              process:
+                size: 1600m
+          taskmanager:
+            bind-host: localhost
+            host: localhost
+            numberOfTaskSlots: 4
+            memory:
+              process:
+                size: 2400m
+          parallelism:
+            default: 2
+          rest:
+            address: localhost
+            bind-address: localhost
+            port: 8090
+            bind-port: 8090
           state:
             backend:
               type: hashmap
@@ -134,24 +164,12 @@ jobs:
               interval: 10s
               min-pause: 2s
               timeout: 2min
-          rest:
-            port: 8090
-            bind-port: 8090
-            address: localhost
-            bind-address: localhost
-          jobmanager:
-            memory:
-              process:
-                size: 1600m
-          taskmanager:
-            numberOfTaskSlots: 4
-            memory:
-              process:
-                size: 2400m
-          parallelism:
-            default: 2
+          classloader:
+            parent-first-patterns:
+              additional: org.apache.kafka
           CONF
           mkdir -p /tmp/flink-ckpt
+          echo "--- effective config ---"; cat "$F/conf/config.yaml"
           "$F/bin/start-cluster.sh"
           curl -fsS --retry 30 --retry-delay 3 --retry-all-errors http://localhost:8090/overview
 
