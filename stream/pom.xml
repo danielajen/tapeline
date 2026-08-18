@@ -201,6 +201,20 @@
           <reportsDirectory>${project.build.directory}/surefire-reports</reportsDirectory>
           <junitxml>.</junitxml>
           <filereports>TapelineStreamTests.txt</filereports>
+          <!-- Flink reflects into java.util and fails with
+               InaccessibleObjectException on any JDK with the module system
+               enforced. The cluster gets these via env.java.opts.all; the test
+               JVM needs them here, or the operator harness tests cannot run at
+               all. -->
+          <argLine>
+            --add-opens=java.base/java.util=ALL-UNNAMED
+            --add-opens=java.base/java.lang=ALL-UNNAMED
+            --add-opens=java.base/java.io=ALL-UNNAMED
+            --add-opens=java.base/java.nio=ALL-UNNAMED
+            --add-opens=java.base/java.lang.reflect=ALL-UNNAMED
+            --add-opens=java.base/java.util.concurrent=ALL-UNNAMED
+            --add-opens=java.base/sun.nio.ch=ALL-UNNAMED
+          </argLine>
         </configuration>
         <executions>
           <execution>

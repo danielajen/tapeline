@@ -30,7 +30,6 @@ class BookFunction(
 
   @transient private var bookState: ValueState[BookSnapshot] = _
   @transient private var lastEmitted: ValueState[Quote] = _
-  @transient private var timerSet: ValueState[java.lang.Boolean] = _
 
   @transient private var crossedBooks: Counter = _
   @transient private var snapshotsApplied: Counter = _
@@ -44,10 +43,6 @@ class BookFunction(
     lastEmitted = getRuntimeContext.getState(
       new ValueStateDescriptor[Quote]("last-quote", TypeInformation.of(classOf[Quote]))
     )
-    timerSet = getRuntimeContext.getState(
-      new ValueStateDescriptor[java.lang.Boolean]("timer-set", TypeInformation.of(classOf[java.lang.Boolean]))
-    )
-
     val group = getRuntimeContext.getMetricGroup.addGroup("tapeline").addGroup("book")
     crossedBooks = group.counter("crossed_books")
     snapshotsApplied = group.counter("snapshots_applied")
@@ -77,13 +72,29 @@ class BookFunction(
 
     bookState.update(updated.toSnapshot)
 
-    // Register a processing-time timer to coalesce emissions. One timer at a
-    // time per key, or a busy symbol would queue thousands.
-    if (timerSet.value() == null) {
-      val fireAt = ctx.timerService().currentProcessingTime() + emitIntervalMs
-      ctx.timerService().registerProcessingTimeTimer(fireAt)
-      timerSet.update(java.lang.Boolean.TRUE)
-    }
+    armTimer(ctx.timerService())
+  }
+
+  /** Registers the next emit timer on a fixed grid.
+    *
+    * Aligning to a grid rather than to "now plus interval" makes registration
+    * idempotent: Flink deduplicates timers by key and timestamp, so a busy
+    * symbol registering on every one of a thousand deltas still ends up with
+    * exactly one pending timer per interval. That removes the need for a
+    * flag tracking whether a timer is already armed.
+    *
+    * The flag was not merely redundant, it was wrong twice. Guarding
+    * registration on it meant the timer stopped re-arming once input went
+    * quiet — a symbol that fell silent stopped publishing entirely instead of
+    * continuing to serve its last book. And because the flag is keyed state
+    * while the timer is not, a restore could bring back a flag saying "armed"
+    * with no timer behind it, leaving that key mute for the life of the job.
+    * Both are covered by BookFunctionHarnessSpec.
+    */
+  private def armTimer(timers: org.apache.flink.streaming.api.TimerService): Unit = {
+    val now = timers.currentProcessingTime()
+    val nextTick = (now / emitIntervalMs + 1) * emitIntervalMs
+    timers.registerProcessingTimeTimer(nextTick)
   }
 
   override def onTimer(
@@ -91,7 +102,8 @@ class BookFunction(
       ctx: KeyedProcessFunction[String, BookDelta, Quote]#OnTimerContext,
       out: Collector[Quote]
   ): Unit = {
-    timerSet.clear()
+    // Always re-arm, before anything can return early.
+    armTimer(ctx.timerService())
 
     val snapshot = Option(bookState.value())
     if (snapshot.isEmpty) return
