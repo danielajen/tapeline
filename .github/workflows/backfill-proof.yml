@@ -157,7 +157,15 @@ jobs:
               stream/target/tapeline-stream-0.1.0.jar "$1" > "/tmp/submit-$1.log" 2>&1
             local rc=$?
             cat "/tmp/submit-$1.log" >&2
-            [ $rc -ne 0 ] && { echo "::error::submit $1 exited $rc"; return 1; }
+            # An `if`, not `[ ] && { }`. GitHub runs steps under `bash -e`,
+            # where that idiom exits the shell whenever the test is false -
+            # here, on every SUCCESSFUL submit. Both jobs started and the step
+            # then died before printing their ids. shellcheck flags this as
+            # SC2015 and this repo has now been bitten by it twice.
+            if [ "$rc" -ne 0 ]; then
+              echo "::error::submit $1 exited $rc"
+              return 1
+            fi
             grep -oE '[0-9a-f]{32}' "/tmp/submit-$1.log" | head -1
           }
 
@@ -165,7 +173,10 @@ jobs:
           BARS=$(submit trades) || exit 1
           LAKE=$(submit lakehouse) || exit 1
           echo "trades job=$BARS lakehouse job=$LAKE"
-          [ -n "$BARS" ] && [ -n "$LAKE" ] || { echo "::error::a job id was empty"; exit 1; }
+          if [ -z "$BARS" ] || [ -z "$LAKE" ]; then
+            echo "::error::a job id was empty"
+            exit 1
+          fi
 
           # Long enough for the windows to close and for Iceberg to commit,
           # which it does on checkpoint rather than per record. Progress is
@@ -196,12 +207,12 @@ jobs:
           timeout 120 "$F/bin/flink" cancel "$BARS" || echo "cancel trades timed out"
           timeout 120 "$F/bin/flink" cancel "$LAKE" || echo "cancel lakehouse timed out"
 
-          [ "$DATAFILES" -gt 0 ] || {
+          if [ "$DATAFILES" -eq 0 ]; then
             echo "::error::lakehouse committed no data files; nothing to replay"
             grep -E 'IcebergFilesCommitter|CommitSummary' \
               /tmp/flink-${FLINK_VERSION}/log/*taskexecutor*.log | tail -20 || true
             exit 1
-          }
+          fi
 
       - name: Run the replay
         env:
