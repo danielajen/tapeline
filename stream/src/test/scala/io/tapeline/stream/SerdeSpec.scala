@@ -14,7 +14,7 @@ import java.io.ByteArrayOutputStream
 class BookSnapshotSpec extends AnyFunSuite with Matchers {
 
   test("a book survives the round trip through its checkpointed form") {
-    val delta = BookDelta(
+    val delta = BookDelta.fromLevels(
       venue = "coinbase", symbol = "BTC-USD", isSnapshot = true,
       bids = Seq(Level(100.0, 1.0), Level(99.5, 2.0), Level(99.0, 3.0)),
       asks = Seq(Level(100.5, 1.5), Level(101.0, 2.5)),
@@ -33,7 +33,7 @@ class BookSnapshotSpec extends AnyFunSuite with Matchers {
   }
 
   test("the checkpointed form preserves book ordering") {
-    val book = OrderBook.empty(BookDelta(
+    val book = OrderBook.empty(BookDelta.fromLevels(
       "kraken", "ETH-USD", isSnapshot = true,
       bids = Seq(Level(10.0, 1), Level(30.0, 1), Level(20.0, 1)),
       asks = Seq(Level(60.0, 1), Level(40.0, 1), Level(50.0, 1)),
@@ -57,7 +57,7 @@ class BookSnapshotSpec extends AnyFunSuite with Matchers {
     // into Flink state came back as a List and the job crash-looped on its
     // first real checkpoint. Arrays of primitives have a well-defined Kryo
     // representation; this pins the shape so the regression cannot return.
-    val snap = OrderBook.empty(BookDelta(
+    val snap = OrderBook.empty(BookDelta.fromLevels(
       "coinbase", "BTC-USD", isSnapshot = true,
       bids = Seq(Level(100.0, 1.0)), asks = Seq(Level(101.0, 2.0)),
       eventTimeUs = 1L, ingestTimeUs = 2L, sequence = 5L

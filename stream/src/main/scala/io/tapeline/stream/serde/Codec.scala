@@ -112,7 +112,7 @@ object Codec {
     sequence = lng(r, "sequence")
   )
 
-  def toBookDelta(r: GenericRecord): BookDelta = BookDelta(
+  def toBookDelta(r: GenericRecord): BookDelta = BookDelta.fromLevels(
     venue = str(r, "venue"),
     symbol = str(r, "symbol"),
     isSnapshot = bool(r, "is_snapshot"),

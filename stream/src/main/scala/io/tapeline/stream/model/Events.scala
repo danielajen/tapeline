@@ -31,16 +31,62 @@ object Events {
     def isBuy: Boolean = side == "BUY"
   }
 
+  /** An L2 update.
+    *
+    * ==Why parallel arrays and not Seq[Level]==
+    *
+    * This held `bids: Seq[Level]` and it crash-looped every Flink job that
+    * touched it. Flink serializes records crossing an operator boundary with
+    * Kryo, and Kryo does not round-trip Scala's immutable collections: a
+    * `Seq` written by the map operator arrived at the keyed process function
+    * as something whose `foldLeft` threw `NoSuchElementException: head of
+    * empty list`.
+    *
+    * The rule this encodes is broader than the one first written down, which
+    * only covered types placed in `ValueState`: **no Scala collection may
+    * cross a Flink boundary, state or network.** Events are serialized too.
+    *
+    * Unit tests cannot catch this. In-process there is no serialization at
+    * all — only a real cluster, across a real operator boundary, exercises
+    * Kryo. See docs/POSTMORTEM.md#postmortem-4.
+    */
   final case class BookDelta(
       venue: String,
       symbol: String,
       isSnapshot: Boolean,
-      bids: Seq[Level],
-      asks: Seq[Level],
+      bidPrices: Array[Double],
+      bidSizes: Array[Double],
+      askPrices: Array[Double],
+      askSizes: Array[Double],
       eventTimeUs: Long,
       ingestTimeUs: Long,
       sequence: Long
-  )
+  ) {
+    def bids: Vector[Level] = BookDelta.levels(bidPrices, bidSizes)
+    def asks: Vector[Level] = BookDelta.levels(askPrices, askSizes)
+  }
+
+  object BookDelta {
+    private def levels(prices: Array[Double], sizes: Array[Double]): Vector[Level] = {
+      val n = math.min(prices.length, sizes.length)
+      val b = Vector.newBuilder[Level]
+      var i = 0
+      while (i < n) { b += Level(prices(i), sizes(i)); i += 1 }
+      b.result()
+    }
+
+    /** Builds from level sequences, for tests and decoders. */
+    def fromLevels(
+        venue: String, symbol: String, isSnapshot: Boolean,
+        bids: Seq[Level], asks: Seq[Level],
+        eventTimeUs: Long, ingestTimeUs: Long, sequence: Long
+    ): BookDelta = BookDelta(
+      venue, symbol, isSnapshot,
+      bids.map(_.price).toArray, bids.map(_.size).toArray,
+      asks.map(_.price).toArray, asks.map(_.size).toArray,
+      eventTimeUs, ingestTimeUs, sequence
+    )
+  }
 
   final case class ChainTransfer(
       chain: String,

@@ -8,7 +8,7 @@ import org.scalatest.matchers.should.Matchers
 class OrderBookSpec extends AnyFunSuite with Matchers {
 
   private def snapshot(bids: Seq[(Double, Double)], asks: Seq[(Double, Double)], seq: Long = 1L) =
-    BookDelta(
+    BookDelta.fromLevels(
       venue = "coinbase", symbol = "BTC-USD", isSnapshot = true,
       bids = bids.map { case (p, s) => Level(p, s) },
       asks = asks.map { case (p, s) => Level(p, s) },
@@ -20,7 +20,7 @@ class OrderBookSpec extends AnyFunSuite with Matchers {
       asks: Seq[(Double, Double)],
       seq: Long = 2L,
       eventTimeUs: Long = 2_000_000L
-  ) = BookDelta(
+  ) = BookDelta.fromLevels(
     venue = "coinbase", symbol = "BTC-USD", isSnapshot = false,
     bids = bids.map { case (p, s) => Level(p, s) },
     asks = asks.map { case (p, s) => Level(p, s) },
