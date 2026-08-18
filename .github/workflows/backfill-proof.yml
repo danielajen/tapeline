@@ -143,38 +143,36 @@ jobs:
           F=/tmp/flink-${FLINK_VERSION}
           export FLINK_ENV_JAVA_OPTS="--add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/java.text=ALL-UNNAMED --add-opens=java.base/java.time=ALL-UNNAMED"
 
-          # Every Flink client call is wrapped in a timeout.
+          # No command substitution on this path.
           #
-          # The first attempt at this step submitted both jobs successfully and
-          # then produced no further output for 34 minutes, until the job
-          # timeout killed it. An unbounded client call cannot be told apart
-          # from slow progress, and it consumed the whole budget without
-          # yielding a single diagnostic. Bounded calls turn a hang into a
-          # located failure.
-          submit() {
-            echo "submitting $1..." >&2
+          # Two runs died immediately after both jobs submitted successfully,
+          # before the next echo, with no error of the step's own. Under
+          # `bash -e` a function called inside $(...) can abort the subshell
+          # for reasons that never reach the log, and every attempt to guess
+          # which construct was responsible cost a ten-minute run. Job ids go
+          # to files, `set -x` traces every line, and `set +e` is explicit
+          # around the parts allowed to fail.
+          set -x
+
+          run_job() {
+            set +e
             timeout 300 "$F/bin/flink" run -d -c io.tapeline.stream.TapelineJob \
               stream/target/tapeline-stream-0.1.0.jar "$1" > "/tmp/submit-$1.log" 2>&1
-            local rc=$?
-            cat "/tmp/submit-$1.log" >&2
-            # An `if`, not `[ ] && { }`. GitHub runs steps under `bash -e`,
-            # where that idiom exits the shell whenever the test is false -
-            # here, on every SUCCESSFUL submit. Both jobs started and the step
-            # then died before printing their ids. shellcheck flags this as
-            # SC2015 and this repo has now been bitten by it twice.
-            if [ "$rc" -ne 0 ]; then
-              echo "::error::submit $1 exited $rc"
-              return 1
-            fi
-            grep -oE '[0-9a-f]{32}' "/tmp/submit-$1.log" | head -1
+            rc=$?
+            set -e
+            cat "/tmp/submit-$1.log"
+            grep -oE '[0-9a-f]{32}' "/tmp/submit-$1.log" | head -1 > "/tmp/jobid-$1"
+            echo "$1 submitted rc=$rc id=$(cat "/tmp/jobid-$1")"
           }
 
           # Both consume the same trades: one writes bars, one writes Iceberg.
-          BARS=$(submit trades) || exit 1
-          LAKE=$(submit lakehouse) || exit 1
-          echo "trades job=$BARS lakehouse job=$LAKE"
+          run_job trades
+          run_job lakehouse
+          BARS=$(cat /tmp/jobid-trades)
+          LAKE=$(cat /tmp/jobid-lakehouse)
+
           if [ -z "$BARS" ] || [ -z "$LAKE" ]; then
-            echo "::error::a job id was empty"
+            echo "::error::a job id was empty (trades='$BARS' lakehouse='$LAKE')"
             exit 1
           fi
 
@@ -184,7 +182,7 @@ jobs:
           for i in $(seq 1 10); do
             sleep 15
             N=$(find /tmp/warehouse -path '*/trades/data/*' -type f 2>/dev/null | wc -l)
-            echo "  t=$((i*15))s datafiles=$N states=$(timeout 30 curl -s http://localhost:8090/jobs | head -c 200)"
+            echo "  t=$((i*15))s datafiles=$N"
           done
 
           # Count data files by location, not by extension.
@@ -193,19 +191,15 @@ jobs:
           # lakehouse job had worked perfectly - the log showed
           # "Committed append ... dataFilesCount=3, dataFilesRecordCount=8953".
           # Iceberg's write format is a table property, so the extension is not
-          # something this check gets to assume. Asserting on the wrong
-          # attribute produced another confident zero, which is now the third
-          # time a probe in this repo has done that.
+          # something this check gets to assume.
           echo "--- warehouse ---"; find /tmp/warehouse -type f | head -25
           DATAFILES=$(find /tmp/warehouse -path '*/trades/data/*' -type f | wc -l)
-          SNAPSHOTS=$(find /tmp/warehouse -name 'v*.metadata.json' | wc -l)
-          echo "data files: $DATAFILES, metadata versions: $SNAPSHOTS"
+          echo "data files: $DATAFILES"
 
-          # Cancelling can block while the Iceberg sink finishes a commit, so
-          # this is bounded too. A job left running would only waste slots the
-          # replay does not need.
-          timeout 120 "$F/bin/flink" cancel "$BARS" || echo "cancel trades timed out"
-          timeout 120 "$F/bin/flink" cancel "$LAKE" || echo "cancel lakehouse timed out"
+          set +e
+          timeout 120 "$F/bin/flink" cancel "$BARS"
+          timeout 120 "$F/bin/flink" cancel "$LAKE"
+          set -e
 
           if [ "$DATAFILES" -eq 0 ]; then
             echo "::error::lakehouse committed no data files; nothing to replay"
