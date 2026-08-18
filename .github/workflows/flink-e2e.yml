@@ -91,7 +91,7 @@ jobs:
           /tmp/gen -kind book -schema-id "$ID" -rate 400 -duration 20s \
             -topic md.book.v1 -schema ingest/schemas/avro/book_delta.v1.avsc
 
-          SEEDED=$(docker exec tapeline-kafka-1 kafka-run-class kafka.tools.GetOffsetShell \
+          SEEDED=$(docker exec tapeline-kafka-1 kafka-get-offsets \
             --bootstrap-server kafka:29092 --topic md.book.v1 | awk -F: '{s+=$3} END{print s+0}')
           echo "seeded=$SEEDED"
           [ "$SEEDED" -gt 1000 ] || { echo "::error::only $SEEDED deltas seeded"; exit 1; }
