@@ -214,11 +214,26 @@ Getting here took **seven** distinct defects — see POSTMORTEM 3 and 4. The
 last was the hardest: Kryo does not round-trip Scala collections, and the fix
 had to reach the *event* types, not just the state types.
 
-**Still open in the same run: `quotes produced = 0`.** The book operator is
-consuming and checkpointing, but nothing reached `md.quotes.v1`. Not yet
-diagnosed — the emit path runs on a processing-time timer and the sink is
-transactional, so either could be responsible. Recorded as unresolved rather
-than rounded up.
+**Still open: `quotes produced = 0`.** Two hypotheses tested, one eliminated.
+
+The first was that the generator produced permanently crossed books — it
+randomised the mid per message and deltas only added levels, so a bid from a
+high-mid message sat above an ask from a low-mid one and `BookFunction`
+correctly refused to emit. Fixing the generator to send periodic snapshots and
+deletes on the previous touch **changed the state size from 27,751 to 19,113
+bytes**, confirming the deletes take effect — and quotes stayed at zero. So
+that was a real bug in the test data, and not this one.
+
+The surviving hypothesis, untested: the emit path is a **processing-time
+timer** registered from `processElement`, and it re-arms only when another
+element arrives. The seeded 8,000 records drain in seconds, so after the
+backlog is consumed no element ever re-arms the timer. That would explain
+sustained zero output from a job that is otherwise healthy — and it would be a
+real design bug, not a test artifact: a quiet symbol would stop producing
+quotes entirely rather than continuing to publish its last book.
+
+Verifying it means either a continuously-fed topic or an event-time timer.
+Recorded as unresolved rather than rounded up.
 
 - **Previously: Flink ran in CI and crash-looped.** The workflow now gets all the
   way through cluster startup and job submission — five separate defects fixed
