@@ -158,7 +158,22 @@ func main() {
 				// moves, so the generator now does the same.
 				seq := int64(sent)
 				key := ven + "|" + sym
-				isSnap := !seeded[key] || sent%10 == 0
+				// Every book message is a snapshot.
+				//
+				// Deltas with a per-message random mid cross the book: a bid
+				// from a high-mid message ends up above an ask from a low-mid
+				// one, and BookFunction then correctly suppresses every quote.
+				// Two attempts to keep deltas consistent — periodic snapshots,
+				// then deletes on the previous touch — both still produced a
+				// crossed book and zero output.
+				//
+				// A snapshot stream is the honest choice for a smoke test: it
+				// exercises the source, the keyed state, checkpointing and the
+				// emit path, which is what this workflow asserts. The delta
+				// path is covered properly and deterministically by
+				// BookFunctionHarnessSpec, in-process, where the book contents
+				// can actually be controlled.
+				isSnap := true
 				seeded[key] = true
 
 				bids := make([]level, 0, 10)
