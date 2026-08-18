@@ -485,3 +485,39 @@ production Flink/Scala codebase does; the first is faster to land.
 **Measured state at the point of this write-up:** the CI job reads records and
 writes 2,220 of them, then restarts. `checkpoints completed=0 failed=1`,
 `quotes produced 0`. Exactly-once remains unproven.
+
+## Postmortem 5: a probe that reported zero when it could not measure
+
+**Impact.** Three CI runs and several hours spent debugging an order book
+operator that was working correctly the entire time.
+
+**What was seen.** The Flink end-to-end workflow reported
+`quotes produced = 0` while the job ran cleanly, read 7,930 records and
+checkpointed 14 KB of state three times. A second signal appeared to confirm
+it: `records written` exactly equalled `records read`, implying the book
+operator emitted nothing.
+
+**What was actually wrong.** Two independent measurement bugs, no product bug.
+
+The offset probe shelled out to `kafka.tools.GetOffsetShell`, removed in Kafka
+7.7. The call failed, stdout came back empty, and the parse ended in a fallback
+to zero. The step therefore printed exactly zero for every run, whether the
+topic held zero messages or a million. This was the second time this same
+removed class produced a confident wrong number in this repository.
+
+The corroborating signal was arithmetic. `write-records` was summed across
+vertices, but the book operator is chained with the Kafka committer, which
+emits nothing downstream, so that vertex reports zero writes however many
+quotes it produces. `written == read` was not evidence of anything.
+
+**Why it took three runs.** Both signals agreed, and they were wrong for
+unrelated reasons. Two real bugs were found and fixed while chasing it: a
+timer that stopped re-arming once input went quiet, and a generator that
+produced crossed books. Fixing them changed nothing visible, which read as
+"hypothesis eliminated" rather than "the instrument is broken".
+
+**The lesson.** A measurement that returns zero when it fails is worse than one
+that returns nothing, because zero is a plausible answer. Every probe in this
+repo now fails loudly instead of defaulting. And when a fix that should have
+changed a number changes nothing at all, suspect the instrument before the
+third hypothesis about the system.

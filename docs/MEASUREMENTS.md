@@ -396,3 +396,30 @@ invites a question that ends badly.
 What the numbers legitimately support is a claim about *engineering*: that
 the system was measured, that it was broken on purpose to see what happened,
 and that the failure modes are known rather than assumed.
+
+## Flink book job, end to end (GitHub Actions, 4 vCPU / 16 GB)
+
+Measured by `.github/workflows/flink-e2e.yml` on every dispatch. Kafka and
+Schema Registry in Docker, a real Flink 1.20.1 cluster, 8,000 Avro book
+messages seeded through the registry.
+
+| | |
+|---|---|
+| records into the book operator | 7,930 |
+| quotes written to `md.quotes.v1` | 64 |
+| checkpoints completed / failed | 3 / 0 |
+| checkpoint duration | avg 83 ms, max 194 ms |
+| checkpointed state | avg 14.5 KB, max 14.6 KB |
+
+The quote count is far below the record count by design: quotes are emitted on
+a timer and only when the top of book changes, so 7,930 deltas across 9 keys
+over ~80 seconds coalesce to 64 publishes.
+
+Completed checkpoints are what makes the exactly-once claim measured rather
+than asserted. The sink is transactional, and a transaction commits on
+checkpoint completion; three clean checkpoints mean the two-phase commit path
+actually ran.
+
+Not measured: throughput under sustained load, recovery time from a real
+TaskManager failure, or behaviour at production parallelism. This is a
+correctness and liveness check, not a benchmark.
