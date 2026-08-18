@@ -138,7 +138,7 @@ check nobody has verified is switched on.
 
 **5. Pure logic, thin operators.** The same split in three languages — Go
 decoders versus `Runner`, Scala `OrderBook` versus `BookFunction`, Java
-`SignedRequest` versus `AuthInterceptor` — and it is why 168 tests run in
+`SignedRequest` versus `AuthInterceptor` — and it is why 191 tests run in
 about three seconds with no cluster, broker or container.
 
 ---

@@ -72,7 +72,7 @@ jobs sharing a transactional id prefix will silently fence each other.
 **Pure logic, thin framework wrappers**, in all three languages. Go decoders
 are `bytes → events` with no sockets; `OrderBook` and `Divergence` are values
 with no Flink types; `SignedRequest` and `HmacSigner` have no servlet in
-sight. This is why 168 tests run in about three seconds with no cluster, no
+sight. This is why 191 tests run in about four seconds with no cluster, no
 broker and no container — and why the bug in the postmortem was catchable at
 all. → [`DESIGN_DECISIONS.md#d8`](docs/DESIGN_DECISIONS.md)
 
