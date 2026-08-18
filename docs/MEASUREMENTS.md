@@ -189,7 +189,14 @@ chain_transfer → 3).
 
 Stated plainly so nothing here gets quoted as if it were measured.
 
-- **Flink now runs in CI**, on a 16 GB GitHub-hosted runner, on every commit
+- **Flink runs in CI and still crash-loops.** The workflow now gets all the
+  way through cluster startup and job submission — five separate defects fixed
+  to get there — and the job reads records and writes 2,220 before failing on
+  a Kryo serialization bug in the event types (POSTMORTEM 4). **No checkpoint
+  has ever completed, and no quote has ever been produced by Flink.**
+  Exactly-once is written and unit-tested, not observed.
+
+- **The workflow itself now runs in CI**, on a 16 GB GitHub-hosted runner, on every commit
   that touches `stream/`. `.github/workflows/flink-e2e.yml` seeds
   `md.book.v1` with 8,000 deterministic deltas, submits the book job, and
   **fails the build** unless the job is RUNNING, at least one checkpoint has

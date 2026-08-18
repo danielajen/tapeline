@@ -437,3 +437,50 @@ was a genuine correctness bug in state serialization that would have corrupted
 every order book on the first restore.
 
 **A compiling Flink job and a running Flink job are different artifacts.**
+
+---
+
+# Postmortem 4: the Kryo bug was bigger than the fix
+
+**Status:** open. Root cause identified, fix not applied.
+
+Postmortem 3 fixed `BookSnapshot` — the type held in Flink *state* — by
+replacing `Vector[Level]` with parallel `Array[Double]`, because Kryo does not
+round-trip Scala's immutable collections. 55 Scala tests pass. The job now
+submits cleanly to a real cluster.
+
+It still crash-loops, with the same exception:
+
+```
+java.util.NoSuchElementException: head of empty list
+  at scala.collection.LinearSeqOps.foldLeft
+  at io.tapeline.stream.book.OrderBook$.patchSide
+```
+
+**The fix was too narrow.** `patchSide(side, updates)` takes its `updates`
+from `delta.bids`, and `delta` is a `BookDelta` — an *event*, not state. Flink
+serializes events crossing an operator boundary with the same Kryo it uses for
+state. `BookDelta.bids: Seq[Level]` is a Scala collection, so it degrades on
+the hop from the map operator into the keyed process function exactly as the
+state did.
+
+The correct statement of the rule is broader than the one written down last
+time:
+
+> **No Scala collection may cross a Flink boundary — state or network.**
+> That covers every field of every event type in `Events.scala`, not just the
+> types explicitly placed in `ValueState`.
+
+**Why the tests still pass.** For the same reason as before, and it is worth
+restating because it caught the same person twice: unit tests run in-process,
+where no serialization happens at all. Only a real cluster exercises Kryo, and
+only across a real operator boundary.
+
+**The fix** is to give `BookDelta`, `Trade` and `Quote` primitive-array
+representations, or register a proper `TypeSerializer` for the Scala types
+rather than falling through to Kryo. The second is better and is what a
+production Flink/Scala codebase does; the first is faster to land.
+
+**Measured state at the point of this write-up:** the CI job reads records and
+writes 2,220 of them, then restarts. `checkpoints completed=0 failed=1`,
+`quotes produced 0`. Exactly-once remains unproven.
