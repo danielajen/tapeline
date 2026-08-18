@@ -17,6 +17,7 @@
   <name>Tapeline Serving Tier</name>
 
   <properties>
+    <clickhouse.version>0.6.5</clickhouse.version>
     <java.version>21</java.version>
     <grpc.version>1.68.1</grpc.version>
     <protobuf.version>3.25.5</protobuf.version>
@@ -63,18 +64,27 @@
          defaults died with "Driver org.postgresql.Driver claims to not accept
          jdbcUrl". Nothing caught it because no test and no CI job had ever
          started the Spring context against the default configuration. -->
+    <!-- The driver, its client, and an HTTP transport for it.
+         The `all` classifier looked like the tidy way to get these as one
+         shaded artifact. It is not: Spring Boot's nested-jar layout does not
+         unpack it the way a flat classpath would, and the context failed with
+         ClassNotFoundException on com.clickhouse.client.ClickHouseClient -
+         a class that is inside that shaded jar. Declaring the three
+         dependencies explicitly lets Maven resolve the real graph. -->
     <dependency>
       <groupId>com.clickhouse</groupId>
       <artifactId>clickhouse-jdbc</artifactId>
-      <version>0.6.5</version>
-      <classifier>all</classifier>
-      <exclusions>
-        <!-- Brings its own slf4j binding, which collides with Spring Boot's. -->
-        <exclusion>
-          <groupId>org.slf4j</groupId>
-          <artifactId>slf4j-api</artifactId>
-        </exclusion>
-      </exclusions>
+      <version>${clickhouse.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.clickhouse</groupId>
+      <artifactId>clickhouse-client</artifactId>
+      <version>${clickhouse.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.clickhouse</groupId>
+      <artifactId>clickhouse-http-client</artifactId>
+      <version>${clickhouse.version}</version>
     </dependency>
     <dependency>
       <groupId>org.springframework.kafka</groupId>
