@@ -167,7 +167,11 @@ Measured on 17 August 2026 against live exchange feeds:
 | Kafka broker killed mid-stream | **0 events lost, 20 s to resume** |
 | Serving tier under k6 | **1,751 req/sec**, 350 µs median, 0.05% errors |
 
-**Flink, the serving tier and the backfill proof are still unmeasured**, and
+The Flink tier runs end-to-end in CI on every commit
+([`flink-e2e.yml`](.github/workflows/flink-e2e.yml)) — the build fails unless
+the job is running, a checkpoint has completed, and quotes were produced.
+
+**The backfill proof and the monolith comparison are still unmeasured**, and
 [`MEASUREMENTS.md`](docs/MEASUREMENTS.md) says so explicitly rather than
 estimating. The first live run also found five real bugs —
 including a silent 59% data loss — written up in

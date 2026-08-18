@@ -1,0 +1,253 @@
+# End-to-end Flink job run.
+#
+# This exists because the Flink tier could not be exercised on the development
+# machine: 8 GB total, 4 GB reserved by Docker, and a JobManager plus a
+# TaskManager need ~2 GB more. Under swap pressure the RPC between them misses
+# its 10-second deadline and the job dies with AskTimeoutException — a
+# hardware limit, not a defect.
+#
+# A GitHub-hosted runner has 16 GB and a Docker daemon, so the job runs there.
+# Running it in CI rather than once by hand is strictly better anyway: it turns
+# "it ran on my laptop once" into "it runs on every commit, and the build fails
+# if it stops running."
+#
+# Every step below encodes a defect found the first time this was attempted
+# locally; see docs/POSTMORTEM.md#postmortem-3. Removing any of them
+# reintroduces a specific, documented failure.
+
+name: Flink end-to-end
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'stream/**'
+      - 'ingest/schemas/**'
+      - 'tools/**'
+      - '.github/workflows/flink-e2e.yml'
+  pull_request:
+    paths:
+      - 'stream/**'
+  workflow_dispatch:
+
+jobs:
+  flink-book-job:
+    name: Book job produces quotes and checkpoints
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    env:
+      FLINK_VERSION: "1.20.1"
+      TAPELINE_KAFKA_BROKERS: localhost:9092
+      TAPELINE_SCHEMA_REGISTRY_URL: http://localhost:8081
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'   # Flink 1.20's supported JDK; 21 needs extra --add-opens
+          cache: maven
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache-dependency-path: tools/quotegen/go.sum
+
+      # --- infrastructure ----------------------------------------------------
+      - name: Start Kafka and Schema Registry
+        run: |
+          docker compose -f deploy/docker-compose.yml up -d kafka schema-registry
+          for i in $(seq 1 60); do
+            docker exec tapeline-kafka-1 kafka-broker-api-versions \
+              --bootstrap-server kafka:29092 >/dev/null 2>&1 && break
+            sleep 5
+          done
+          curl -fsS --retry 30 --retry-delay 5 --retry-all-errors \
+            http://localhost:8081/subjects >/dev/null
+          echo "compatibility: $(curl -s http://localhost:8081/config)"
+
+      - name: Create topics
+        run: |
+          for spec in md.book.v1:6 md.quotes.v1:4 md.trades.v1:4 md.bars.v1:4; do
+            docker exec tapeline-kafka-1 kafka-topics --bootstrap-server kafka:29092 \
+              --create --if-not-exists --topic "${spec%%:*}" \
+              --partitions "${spec##*:}" --replication-factor 1
+          done
+
+      # --- seed deterministic input -----------------------------------------
+      # Not live exchange feeds: CI must not depend on three venues being
+      # reachable and busy, or the assertions below mean nothing.
+      - name: Register the book schema and seed the topic
+        run: |
+          SCHEMA=$(python3 -c "import json;print(json.dumps(open('ingest/schemas/avro/book_delta.v1.avsc').read()))")
+          ID=$(curl -s -X POST -H "Content-Type: application/vnd.schemaregistry.v1+json" \
+            --data "{\"schema\": $SCHEMA}" \
+            http://localhost:8081/subjects/md.book.v1-value/versions | python3 -c "import json,sys;print(json.load(sys.stdin)['id'])")
+          echo "book schema id: $ID"
+
+          cd tools/quotegen && go build -o /tmp/gen . && cd ../..
+          /tmp/gen -kind book -schema-id "$ID" -rate 400 -duration 20s \
+            -topic md.book.v1 -schema ingest/schemas/avro/book_delta.v1.avsc
+
+          SEEDED=$(docker exec tapeline-kafka-1 kafka-run-class kafka.tools.GetOffsetShell \
+            --bootstrap-server kafka:29092 --topic md.book.v1 | awk -F: '{s+=$3} END{print s+0}')
+          echo "seeded=$SEEDED"
+          [ "$SEEDED" -gt 1000 ] || { echo "::error::only $SEEDED deltas seeded"; exit 1; }
+
+      # --- build -------------------------------------------------------------
+      - name: Build the stream jar
+        run: cd stream && mvn -B -q package -DskipTests
+
+      # --- Flink -------------------------------------------------------------
+      # Each line here is a defect found locally. See POSTMORTEM 3.
+      - name: Install and configure Flink
+        run: |
+          curl -fsSL -o /tmp/flink.tgz \
+            "https://archive.apache.org/dist/flink/flink-${FLINK_VERSION}/flink-${FLINK_VERSION}-bin-scala_2.12.tgz"
+          tar -xzf /tmp/flink.tgz -C /tmp
+          F=/tmp/flink-${FLINK_VERSION}
+
+          # DEFECT 1: the job is Scala 2.13; the distribution bundles 2.12 and
+          # wins on the client classpath, producing
+          # NoSuchMethodError: scala.Predef$.refArrayOps. The job uses Flink's
+          # JAVA API (DESIGN_DECISIONS d3), so this jar is simply unnecessary.
+          mkdir -p "$F/opt-disabled"
+          mv "$F/lib/flink-scala_2.12-${FLINK_VERSION}.jar" "$F/opt-disabled/" || true
+
+          # DEFECT 2: the Kafka client must be parent-loaded, or a job restart
+          # leaves Kafka threads holding a closed classloader and the next
+          # attempt dies with ClassNotFoundException: NetworkClient$1.
+          find ~/.m2 -name 'flink-connector-kafka-*.jar' -exec cp {} "$F/lib/" \; || true
+          find ~/.m2 -name 'kafka-clients-*.jar' ! -name '*sources*' -exec cp {} "$F/lib/" \; || true
+
+          cat >> "$F/conf/config.yaml" <<'CONF'
+          classloader.parent-first-patterns.additional: org.apache.kafka
+          state:
+            backend:
+              type: hashmap
+            checkpoints:
+              dir: file:///tmp/flink-ckpt
+          execution:
+            checkpointing:
+              interval: 10s
+              min-pause: 2s
+              timeout: 2min
+          rest:
+            port: 8090
+            bind-port: 8090
+            address: localhost
+            bind-address: localhost
+          jobmanager:
+            memory:
+              process:
+                size: 1600m
+          taskmanager:
+            numberOfTaskSlots: 4
+            memory:
+              process:
+                size: 2400m
+          parallelism:
+            default: 2
+          CONF
+          mkdir -p /tmp/flink-ckpt
+          "$F/bin/start-cluster.sh"
+          curl -fsS --retry 30 --retry-delay 3 --retry-all-errors http://localhost:8090/overview
+
+      - name: Submit the book job
+        id: submit
+        run: |
+          F=/tmp/flink-${FLINK_VERSION}
+          # DEFECT 3 is fixed in code, not here: Flink's Kafka sink defaults
+          # transaction.timeout.ms to 1h while the broker caps it at 15m, so
+          # exactly-once producers cannot initialise. Connectors.scala sets it
+          # explicitly to 600000.
+          JID=$("$F/bin/flink" run -d -m localhost:8090 \
+            -c io.tapeline.stream.TapelineJob \
+            stream/target/tapeline-stream-0.1.0.jar book | grep -oE '[0-9a-f]{32}')
+          echo "job_id=$JID" >> "$GITHUB_OUTPUT"
+          echo "submitted $JID"
+
+      # --- the assertions ----------------------------------------------------
+      - name: Wait for checkpoints and assert output
+        run: |
+          JID="${{ steps.submit.outputs.job_id }}"
+          for i in $(seq 1 60); do
+            CP=$(curl -s http://localhost:8090/jobs/$JID/checkpoints \
+              | python3 -c "import json,sys;print(json.load(sys.stdin)['counts']['completed'])" 2>/dev/null || echo 0)
+            ST=$(curl -s http://localhost:8090/jobs/$JID \
+              | python3 -c "import json,sys;print(json.load(sys.stdin)['state'])" 2>/dev/null || echo UNKNOWN)
+            echo "  t=${i}0s state=$ST checkpoints=$CP"
+            [ "$CP" -ge 3 ] && break
+            [ "$ST" = "FAILED" ] && { echo "::error::job FAILED"; break; }
+            sleep 10
+          done
+
+          python3 - <<'PY'
+          import json, subprocess, sys, urllib.request
+          jid = "${{ steps.submit.outputs.job_id }}"
+          job = json.load(urllib.request.urlopen(f"http://localhost:8090/jobs/{jid}"))
+          cps = json.load(urllib.request.urlopen(f"http://localhost:8090/jobs/{jid}/checkpoints"))
+
+          quotes = int(subprocess.run(
+              ["docker","exec","tapeline-kafka-1","kafka-run-class",
+               "kafka.tools.GetOffsetShell","--bootstrap-server","kafka:29092",
+               "--topic","md.quotes.v1"],
+              capture_output=True, text=True).stdout.strip().split("\n")[-1].split(":")[-1] or 0)
+
+          counts = cps["counts"]
+          summary = cps.get("summary", {})
+          read = sum(v["metrics"]["read-records"] for v in job["vertices"])
+          written = sum(v["metrics"]["write-records"] for v in job["vertices"])
+
+          print(f"state              {job['state']}")
+          print(f"records read       {read}")
+          print(f"records written    {written}")
+          print(f"checkpoints        completed={counts['completed']} failed={counts['failed']}")
+          if summary.get("end_to_end_duration", {}).get("avg") is not None:
+              print(f"checkpoint duration avg={summary['end_to_end_duration']['avg']}ms "
+                    f"max={summary['end_to_end_duration']['max']}ms")
+              print(f"state size          avg={summary['state_size']['avg']:.0f}B "
+                    f"max={summary['state_size']['max']:.0f}B")
+          print(f"quotes produced    {quotes}")
+
+          with open("flink-e2e-results.txt","w") as f:
+              f.write(f"state={job['state']}\nread={read}\nwritten={written}\n"
+                      f"checkpoints_completed={counts['completed']}\n"
+                      f"checkpoints_failed={counts['failed']}\nquotes={quotes}\n")
+
+          # The three things that make "the Flink tier works" a fact.
+          failures = []
+          if job["state"] != "RUNNING":
+              failures.append(f"job is {job['state']}, expected RUNNING")
+          if counts["completed"] < 1:
+              failures.append("no checkpoint completed — exactly-once is unproven")
+          if quotes < 1:
+              failures.append("no quote produced — the order book never emitted")
+          if failures:
+              for f_ in failures: print(f"::error::{f_}")
+              sys.exit(1)
+          print("\nOK: job running, checkpoints completing, quotes produced")
+          PY
+
+      - name: Flink logs on failure
+        if: failure()
+        run: |
+          tail -80 /tmp/flink-${FLINK_VERSION}/log/*taskexecutor*.log || true
+          tail -40 /tmp/flink-${FLINK_VERSION}/log/*standalonesession*.log || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: flink-e2e-results
+          path: |
+            flink-e2e-results.txt
+            /tmp/flink-*/log/*.log
+          retention-days: 14
+
+      - name: Tear down
+        if: always()
+        run: |
+          /tmp/flink-${FLINK_VERSION}/bin/stop-cluster.sh || true
+          docker compose -f deploy/docker-compose.yml down -v || true

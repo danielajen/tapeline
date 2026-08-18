@@ -145,7 +145,16 @@ chain_transfer → 3).
 
 Stated plainly so nothing here gets quoted as if it were measured.
 
-- **Flink ran, but could not be sustained on this hardware.** A real Flink
+- **Flink now runs in CI**, on a 16 GB GitHub-hosted runner, on every commit
+  that touches `stream/`. `.github/workflows/flink-e2e.yml` seeds
+  `md.book.v1` with 8,000 deterministic deltas, submits the book job, and
+  **fails the build** unless the job is RUNNING, at least one checkpoint has
+  completed, and at least one quote was produced. Checkpoint duration and
+  state size are printed and uploaded as an artifact on every run. That is a
+  better arrangement than a one-off local run: it cannot silently stop being
+  true.
+
+- **Flink ran locally too, but could not be sustained on this hardware.** A real Flink
   1.20.1 cluster was started on the host (outside Docker, to use memory Docker
   was not holding), the book job was submitted successfully, and it read
   records from `md.book.v1` and passed them into the order-book operator.
