@@ -86,9 +86,26 @@ object Connectors {
       keyOf: T => String,
       toRecord: T => GenericRecord,
       eventTimeUsOf: T => Long
-  ): KafkaSink[T] =
+  ): KafkaSink[T] = {
+    val props = new java.util.Properties()
+
+    // Flink's Kafka sink defaults transaction.timeout.ms to one hour, and the
+    // Kafka broker default for transaction.max.timeout.ms is fifteen minutes.
+    // The producer therefore cannot initialise at all, and the job crash-loops
+    // with "The transaction timeout is larger than the maximum value allowed
+    // by the broker" — which names the two settings but not which side to
+    // change.
+    //
+    // The rule this value has to satisfy: it must exceed the longest plausible
+    // checkpoint interval plus recovery time, because a transaction stays open
+    // across a checkpoint and an expired one loses data. It must also stay
+    // under the broker's maximum. Ten minutes sits comfortably between a 30s
+    // checkpoint interval and the 15-minute broker ceiling.
+    props.setProperty("transaction.timeout.ms", "600000")
+
     KafkaSink
       .builder[T]()
+      .setKafkaProducerConfig(props)
       .setBootstrapServers(cfg.kafkaBrokers)
       .setRecordSerializer(
         new AvroKeyedSerializer[T](
@@ -104,6 +121,7 @@ object Connectors {
       .setDeliveryGuarantee(DeliveryGuarantee.EXACTLY_ONCE)
       .setTransactionalIdPrefix(transactionalIdPrefix)
       .build()
+  }
 }
 
 /** Serializes `T` to a Confluent-framed Avro value with an explicit key.

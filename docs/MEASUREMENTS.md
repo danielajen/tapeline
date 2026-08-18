@@ -145,12 +145,18 @@ chain_transfer → 3).
 
 Stated plainly so nothing here gets quoted as if it were measured.
 
-- **Flink jobs have never run.** The stream tier compiles, its domain logic is
-  unit-tested and the shaded jar builds, but no job has been submitted, no
-  checkpoint taken, and no exactly-once transaction committed. 4 GB of Docker
-  memory does not fit Kafka plus a JobManager plus a TaskManager alongside the
-  rest.
-- **Backfill correctness.** The comparison query in `BACKFILL.md` is unrun.
+- **Flink ran, but could not be sustained on this hardware.** A real Flink
+  1.20.1 cluster was started on the host (outside Docker, to use memory Docker
+  was not holding), the book job was submitted successfully, and it read
+  records from `md.book.v1` and passed them into the order-book operator.
+  Getting that far required fixing four separate defects — see POSTMORTEM 3.
+  It then failed under `AskTimeoutException` between TaskManager and
+  JobManager: 8 GB total, with Docker holding 4 GB and Flink needing ~2.8 GB
+  on top, is not enough. **No checkpoint ever completed and no quote was ever
+  produced**, so nothing about checkpoint duration, state size, or exactly-once
+  throughput is measured.
+- **Backfill correctness.** The comparison query in `BACKFILL.md` is unrun; it
+  depends on the lakehouse job, which depends on a sustained Flink cluster.
 - **Monolith vs per-topic comparison.** Both jobs exist; neither has been run,
   so the checkpoint-duration claim remains unquantified.
 - **Terraform has never been applied** to a live AWS account.

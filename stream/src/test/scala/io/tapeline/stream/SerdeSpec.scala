@@ -42,14 +42,30 @@ class BookSnapshotSpec extends AnyFunSuite with Matchers {
 
     val snap = book.toSnapshot
     // Bids descend, asks ascend — the flat form is not an arbitrary dump.
-    snap.bids.map(_.price) shouldBe Vector(30.0, 20.0, 10.0)
-    snap.asks.map(_.price) shouldBe Vector(40.0, 50.0, 60.0)
+    snap.bidPrices.toVector shouldBe Vector(30.0, 20.0, 10.0)
+    snap.askPrices.toVector shouldBe Vector(40.0, 50.0, 60.0)
 
     OrderBook.fromSnapshot(snap).bestBid.map(_.price) shouldBe Some(30.0)
   }
 
   test("an empty snapshot restores to an empty book") {
     OrderBook.fromSnapshot(BookSnapshot.empty) shouldBe OrderBook.empty
+  }
+
+  test("the checkpointed form holds only primitives, not Scala collections") {
+    // Kryo does not round-trip Scala's immutable collections. A Vector written
+    // into Flink state came back as a List and the job crash-looped on its
+    // first real checkpoint. Arrays of primitives have a well-defined Kryo
+    // representation; this pins the shape so the regression cannot return.
+    val snap = OrderBook.empty(BookDelta(
+      "coinbase", "BTC-USD", isSnapshot = true,
+      bids = Seq(Level(100.0, 1.0)), asks = Seq(Level(101.0, 2.0)),
+      eventTimeUs = 1L, ingestTimeUs = 2L, sequence = 5L
+    )).toSnapshot
+
+    snap.bidPrices.getClass shouldBe classOf[Array[Double]]
+    snap.askSizes.getClass shouldBe classOf[Array[Double]]
+    OrderBook.fromSnapshot(snap).bestAsk.map(_.size) shouldBe Some(2.0)
   }
 }
 

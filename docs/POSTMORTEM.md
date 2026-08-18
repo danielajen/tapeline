@@ -343,3 +343,97 @@ Five bugs, found in one evening, after **191 unit tests passed**:
 Three of the five were silent. Unit tests found none of them. Every one lived
 in a seam — between a component and a venue's real semantics, between a process
 and a broker that goes away, between code and its own configuration.
+
+
+---
+
+# Postmortem 3: four defects between a compiling Flink job and a running one
+
+**Status:** all four fixed; the job now submits and processes records
+**Detected:** 17–18 August 2026, first attempt to submit to a real cluster
+**Outcome:** job runs but cannot be sustained on the available hardware
+
+The stream tier compiled, produced a 30 MB shaded jar, and passed 54 unit
+tests for months of development time. Submitting it to an actual Flink cluster
+took four fixes.
+
+### 1. Scala 2.13 job against a Scala 2.12 distribution
+
+```
+NoSuchMethodError: scala.Predef$.refArrayOps(java.lang.Object[])
+```
+
+`refArrayOps` changed signature between 2.12 and 2.13, and Flink's
+distribution ships `flink-scala_2.12` in `lib/`, which wins on the client
+classpath.
+
+**Fix:** remove `flink-scala_2.12` from `lib/`. This is where the decision in
+DESIGN_DECISIONS.md#d3 — write Scala against Flink's *Java* API — paid for
+itself: the job needs nothing from that jar, so deleting it is free. A job
+using Flink's Scala API would have had to be rebuilt for 2.12.
+
+### 2. Java 21 module access
+
+Flink 1.20 reflects into `java.util` and needs `--add-opens`. Without the
+flags the client dies in a static initializer with
+`InaccessibleObjectException`, which does not mention Flink, Java versions, or
+what to do.
+
+**Fix:** the standard `env.java.opts.all` set in `config.yaml`.
+
+### 3. The exactly-once transaction timeout trap
+
+```
+The transaction timeout is larger than the maximum value allowed by the broker
+(as configured by transaction.max.timeout.ms)
+```
+
+Flink's Kafka sink defaults `transaction.timeout.ms` to **one hour**. Kafka's
+broker default for `transaction.max.timeout.ms` is **fifteen minutes**. The
+producer cannot initialise, and the job crash-loops.
+
+Every job using `DeliveryGuarantee.EXACTLY_ONCE` hits this, and the code never
+set the property. The value has a real constraint: above the longest plausible
+checkpoint interval plus recovery, below the broker ceiling.
+
+**Fix:** `transaction.timeout.ms = 600000`, set explicitly in `Connectors.scala`
+with the reasoning in a comment.
+
+### 4. Scala collections do not survive Kryo — a correctness bug
+
+```
+NoSuchElementException: head of empty list
+  at scala.collection.LinearSeqOps.foldLeft
+  at io.tapeline.stream.book.OrderBook$.patchSide
+```
+
+`BookSnapshot` held `Vector[Level]`. Flink serializes state it cannot analyse
+with Kryo, and **Kryo does not round-trip Scala's immutable collections**: a
+`Vector` written into state came back as a `List`, and the next fold over the
+order book threw.
+
+This is the important one. `BookSnapshotSpec` tested the round trip and passed
+the whole time — because in-process there is no serialization at all. **Only a
+real checkpoint exercises Kryo.**
+
+**Fix:** `BookSnapshot` now holds parallel `Array[Double]`. Primitive arrays
+have a defined Kryo representation, and the checkpoint format no longer
+depends on Scala's collection library at all — which also means savepoint
+compatibility no longer depends on a Scala version.
+
+### Where it stopped
+
+With all four fixed the job submits, reads from Kafka, and feeds the
+order-book operator. It then fails with `AskTimeoutException` on the
+TaskManager-to-JobManager RPC: the machine has 8 GB, Docker holds 4 GB, and
+Flink wants ~2.8 GB more. That is a hardware limit, not a defect, and it is
+recorded as such in MEASUREMENTS.md rather than dressed up.
+
+### What this run cost and bought
+
+Four defects, none of which 191 unit tests could see. Three were in the seam
+between the job and the cluster — versions, module flags, broker limits. One
+was a genuine correctness bug in state serialization that would have corrupted
+every order book on the first restore.
+
+**A compiling Flink job and a running Flink job are different artifacts.**

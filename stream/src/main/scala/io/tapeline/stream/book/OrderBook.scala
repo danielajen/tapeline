@@ -125,26 +125,56 @@ final case class OrderBook(
     *
     * Both directions are O(n) in the retained depth, which `trim` bounds.
     */
-  def toSnapshot: BookSnapshot = BookSnapshot(
-    bids = bids.toVector.map { case (p, s) => Level(p, s) },
-    asks = asks.toVector.map { case (p, s) => Level(p, s) },
-    lastSequence = lastSequence,
-    lastEventTimeUs = lastEventTimeUs
-  )
+  def toSnapshot: BookSnapshot = {
+    val b = bids.toArray
+    val a = asks.toArray
+    BookSnapshot(
+      bidPrices = b.map(_._1), bidSizes = b.map(_._2),
+      askPrices = a.map(_._1), askSizes = a.map(_._2),
+      lastSequence = lastSequence,
+      lastEventTimeUs = lastEventTimeUs
+    )
+  }
 }
 
 /** The checkpoint-safe representation of an [[OrderBook]]. Levels are held in
   * book order: bids descending, asks ascending.
+  *
+  * ==Why parallel arrays of primitives, and not a Seq of Level==
+  *
+  * This held `Vector[Level]` and it was wrong in a way no unit test could see.
+  * Flink serializes state it cannot analyse with Kryo, and Kryo does not
+  * round-trip Scala's immutable collections: a `Vector` written into state came
+  * back as a `List`. The next `foldLeft` over it then failed with
+  * `NoSuchElementException: head of empty list`, and the job crash-looped the
+  * first time it was ever submitted to a real cluster.
+  *
+  * The round trip is exercised in-process by BookSnapshotSpec, which passed
+  * throughout — because in-process there is no serialization at all. Only a
+  * real checkpoint exercises Kryo.
+  *
+  * Arrays of primitives are the fix: they have a well-defined Kryo
+  * representation, they are what the state backend stores efficiently anyway,
+  * and they remove Scala's collection library from the checkpoint format
+  * entirely — so savepoint compatibility no longer depends on it.
   */
 final case class BookSnapshot(
-    bids: Vector[Level],
-    asks: Vector[Level],
+    bidPrices: Array[Double],
+    bidSizes: Array[Double],
+    askPrices: Array[Double],
+    askSizes: Array[Double],
     lastSequence: Long,
     lastEventTimeUs: Long
-)
+) {
+  def bids: Vector[Level] =
+    bidPrices.iterator.zip(bidSizes.iterator).map { case (p, s) => Level(p, s) }.toVector
+  def asks: Vector[Level] =
+    askPrices.iterator.zip(askSizes.iterator).map { case (p, s) => Level(p, s) }.toVector
+}
 
 object BookSnapshot {
-  val empty: BookSnapshot = BookSnapshot(Vector.empty, Vector.empty, -1L, 0L)
+  val empty: BookSnapshot =
+    BookSnapshot(Array.empty, Array.empty, Array.empty, Array.empty, -1L, 0L)
 }
 
 object OrderBook {
@@ -164,11 +194,25 @@ object OrderBook {
 
   /** Rebuilds a book from its checkpointed flat form. */
   def fromSnapshot(s: BookSnapshot): OrderBook = OrderBook(
-    bids = buildSide(s.bids, BidOrdering),
-    asks = buildSide(s.asks, AskOrdering),
+    bids = buildSideArrays(s.bidPrices, s.bidSizes, BidOrdering),
+    asks = buildSideArrays(s.askPrices, s.askSizes, AskOrdering),
     lastSequence = s.lastSequence,
     lastEventTimeUs = s.lastEventTimeUs
   )
+
+  private def buildSideArrays(
+      prices: Array[Double],
+      sizes: Array[Double],
+      ord: Ordering[Double]
+  ): TreeMap[Double, Double] = {
+    var acc = TreeMap.empty[Double, Double](ord)
+    var i = 0
+    while (i < prices.length && i < sizes.length) {
+      if (sizes(i) > 0) acc = acc.updated(prices(i), sizes(i))
+      i += 1
+    }
+    acc
+  }
 
   private def buildSide(levels: Seq[Level], ord: Ordering[Double]): TreeMap[Double, Double] =
     levels.foldLeft(TreeMap.empty[Double, Double](ord)) { (acc, lvl) =>
