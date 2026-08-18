@@ -24,6 +24,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math"
 	"math/rand"
 	"os"
 	"os/signal"
@@ -62,6 +63,11 @@ type quote struct {
 	EventTimeUS int64   `avro:"event_time_us"`
 	EmitTimeUS  int64   `avro:"emit_time_us"`
 }
+
+// round2 keeps generated prices on a stable tick so a delta's delete lines up
+// exactly with the level a previous message created. Float drift would leave
+// orphaned levels behind and reintroduce the crossing this fixes.
+func round2(v float64) float64 { return math.Round(v*100) / 100 }
 
 func main() {
 	brokers := flag.String("brokers", "localhost:9092", "kafka brokers")
@@ -113,6 +119,8 @@ func main() {
 
 	var sent int
 	batch := make([]kafka.Message, 0, 200)
+	seeded := make(map[string]bool)
+	lastMid := make(map[string]float64)
 
 	for {
 		select {
@@ -133,18 +141,43 @@ func main() {
 			now := time.Now().UnixMicro()
 
 			if *kind == "book" {
-				// First message per (venue, symbol) is a snapshot; the rest
-				// patch it. A book job that only ever saw deltas would never
-				// populate a book at all.
+				// Snapshots periodically, deltas in between, and deltas that
+				// DELETE the levels they replace.
+				//
+				// The first version randomised the mid on every message and
+				// only ever added levels. Books crossed within seconds — a bid
+				// from a high-mid message sitting above an ask from a low-mid
+				// one — and stayed crossed, because nothing removed the stale
+				// side. The Flink job then correctly refused to serve a crossed
+				// book and emitted zero quotes for a ten-minute CI run.
+				//
+				// That was the generator being wrong, not the job: suppressing
+				// a crossed quote is the intended behaviour, since a negative
+				// spread is an arbitrage that does not exist. Real venues send
+				// a snapshot and then deltas that clear levels as the touch
+				// moves, so the generator now does the same.
 				seq := int64(sent)
-				isSnap := sent < len(symbols)*len(venues)
+				key := ven + "|" + sym
+				isSnap := !seeded[key] || sent%10 == 0
+				seeded[key] = true
 
-				bids := make([]level, 0, 5)
-				asks := make([]level, 0, 5)
+				bids := make([]level, 0, 10)
+				asks := make([]level, 0, 10)
 				for i := 0; i < 5; i++ {
-					bids = append(bids, level{Price: mid - spread*float64(i+1), Size: 1 + rand.Float64()})
-					asks = append(asks, level{Price: mid + spread*float64(i+1), Size: 1 + rand.Float64()})
+					bids = append(bids, level{Price: round2(mid - spread*float64(i+1)), Size: 1 + rand.Float64()})
+					asks = append(asks, level{Price: round2(mid + spread*float64(i+1)), Size: 1 + rand.Float64()})
 				}
+				// On a delta, clear the previous touch so the book cannot
+				// accumulate levels on the wrong side of the new mid.
+				if !isSnap {
+					if prev, ok := lastMid[key]; ok {
+						for i := 0; i < 5; i++ {
+							bids = append(bids, level{Price: round2(prev - spread*float64(i+1)), Size: 0})
+							asks = append(asks, level{Price: round2(prev + spread*float64(i+1)), Size: 0})
+						}
+					}
+				}
+				lastMid[key] = mid
 
 				d := bookDelta{
 					Venue: ven, Symbol: sym, IsSnapshot: isSnap,
