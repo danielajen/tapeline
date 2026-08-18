@@ -29,6 +29,10 @@ type Message struct {
 	// deserializing the payload.
 	Venue string
 	Kind  string
+	// Trace carries W3C Trace Context so a span started at the venue socket
+	// is continuous through Kafka into the serving tier. Nil when the record
+	// is not being traced, so an untraced publish adds no header bytes.
+	Trace map[string]string
 }
 
 // Producer is the publish interface, small enough that the pipeline tests
@@ -101,15 +105,20 @@ func (p *KafkaProducer) Publish(ctx context.Context, msgs ...Message) error {
 
 	kms := make([]kafka.Message, 0, len(msgs))
 	for _, m := range msgs {
+		headers := []kafka.Header{
+			{Key: "venue", Value: []byte(m.Venue)},
+			{Key: "kind", Value: []byte(m.Kind)},
+		}
+		for k, v := range m.Trace {
+			headers = append(headers, kafka.Header{Key: k, Value: []byte(v)})
+		}
+
 		kms = append(kms, kafka.Message{
-			Topic: m.Topic,
-			Key:   []byte(m.Key),
-			Value: m.Value,
-			Time:  time.UnixMicro(m.TimeUS),
-			Headers: []kafka.Header{
-				{Key: "venue", Value: []byte(m.Venue)},
-				{Key: "kind", Value: []byte(m.Kind)},
-			},
+			Topic:   m.Topic,
+			Key:     []byte(m.Key),
+			Value:   m.Value,
+			Time:    time.UnixMicro(m.TimeUS),
+			Headers: headers,
 		})
 	}
 

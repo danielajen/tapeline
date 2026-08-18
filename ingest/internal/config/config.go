@@ -51,6 +51,14 @@ type Config struct {
 	OnchainEnabled bool
 	OnchainChain   string
 	OnchainWSURL   string
+
+	// OTLPEndpoint is the OpenTelemetry collector address. Empty disables
+	// tracing, which is a supported configuration and not a degraded one:
+	// the dry-run mode has no collector and should not need one.
+	OTLPEndpoint string
+	// TraceSampleRatio in [0,1]. Market data is high-volume; tracing every
+	// event would cost more than the pipeline it observes.
+	TraceSampleRatio float64
 }
 
 // Defaults returns the configuration used when nothing is set.
@@ -71,6 +79,7 @@ func Defaults() Config {
 		KrakenDepth:       10,
 		BinanceDepthMS:    100,
 		OnchainChain:      "ethereum",
+		TraceSampleRatio:  0.01,
 	}
 }
 
@@ -109,6 +118,15 @@ func Load() (Config, error) {
 	c.OnchainEnabled = envBool("TAPELINE_ONCHAIN_ENABLED", c.OnchainEnabled)
 	c.OnchainChain = envStr("TAPELINE_ONCHAIN_CHAIN", c.OnchainChain)
 	c.OnchainWSURL = envStr("TAPELINE_ONCHAIN_WS_URL", c.OnchainWSURL)
+	c.OTLPEndpoint = envStr("TAPELINE_OTLP_ENDPOINT", c.OTLPEndpoint)
+
+	if v, ok := os.LookupEnv("TAPELINE_TRACE_SAMPLE_RATIO"); ok && v != "" {
+		r, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			return c, fmt.Errorf("config: TAPELINE_TRACE_SAMPLE_RATIO=%q is not a number: %w", v, err)
+		}
+		c.TraceSampleRatio = r
+	}
 
 	return c, c.Validate()
 }
@@ -144,6 +162,9 @@ func (c Config) Validate() error {
 	}
 	if c.BatchSize < 1 {
 		return fmt.Errorf("config: batch size must be positive, got %d", c.BatchSize)
+	}
+	if c.TraceSampleRatio < 0 || c.TraceSampleRatio > 1 {
+		return fmt.Errorf("config: trace sample ratio must be in [0,1], got %v", c.TraceSampleRatio)
 	}
 	if c.BinanceDepthMS != 100 && c.BinanceDepthMS != 1000 {
 		return fmt.Errorf("config: binance depth interval must be 100 or 1000 ms, got %d", c.BinanceDepthMS)

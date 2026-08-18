@@ -30,9 +30,13 @@ import (
 	"github.com/tapeline/ingest/internal/pipeline"
 	"github.com/tapeline/ingest/internal/schema"
 	"github.com/tapeline/ingest/internal/sink"
+	"github.com/tapeline/ingest/internal/tracing"
 	"github.com/tapeline/ingest/internal/venue"
 	avroschema "github.com/tapeline/ingest/schemas"
 )
+
+// version is stamped at build time via -ldflags.
+var version = "dev"
 
 func main() {
 	if err := run(); err != nil {
@@ -58,7 +62,27 @@ func run() error {
 
 	log.Info("starting ingestd",
 		"venues", cfg.Venues, "symbols", cfg.Symbols,
-		"dry_run", cfg.DryRun, "onchain", cfg.OnchainEnabled)
+		"dry_run", cfg.DryRun, "onchain", cfg.OnchainEnabled,
+		"otlp_endpoint", cfg.OTLPEndpoint)
+
+	shutdownTracing, err := tracing.Init(ctx, tracing.Config{
+		Endpoint:    cfg.OTLPEndpoint,
+		SampleRatio: cfg.TraceSampleRatio,
+		Version:     version,
+	})
+	if err != nil {
+		return fmt.Errorf("initialising tracing: %w", err)
+	}
+	defer func() {
+		// A bounded background context: ctx is already cancelled by the time
+		// this runs, and an exporter given a cancelled context drops exactly
+		// the spans from the shutdown you wanted to see.
+		flushCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := shutdownTracing(flushCtx); err != nil {
+			log.Error("flushing traces", "err", err)
+		}
+	}()
 
 	topics := map[model.Kind]string{
 		model.KindTrade:         cfg.TopicTrades,

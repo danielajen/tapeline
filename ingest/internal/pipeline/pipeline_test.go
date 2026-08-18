@@ -11,6 +11,11 @@ import (
 	"github.com/tapeline/ingest/internal/model"
 	"github.com/tapeline/ingest/internal/sink"
 	avroschema "github.com/tapeline/ingest/schemas"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 func testEncoders(t *testing.T) map[model.Kind]*encode.Encoder {
@@ -305,5 +310,66 @@ func TestMissingEncoderIsCountedNotFatal(t *testing.T) {
 	// One bad kind must not stop the trades from flowing.
 	if prod.Len() != 1 {
 		t.Errorf("published %d, want 1", prod.Len())
+	}
+}
+
+// The pipeline must attach W3C trace context to the Kafka record when the
+// publish is being traced, and attach nothing when it is not. Header bytes on
+// every record are real bandwidth at market data volumes.
+func TestTraceContextIsAttachedToPublishedRecords(t *testing.T) {
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.AlwaysSample()))
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+	otel.SetTracerProvider(tp)
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+
+	prod := sink.NewMemoryProducer()
+	in := make(chan model.Event, 4)
+	p := &Pipeline{
+		In:       in,
+		Producer: prod, Detector: gap.New(),
+		Encoders: testEncoders(t), Topics: testTopics(),
+		BatchSize: 1, FlushInterval: time.Hour,
+	}
+
+	ctx, span := tp.Tracer("test").Start(context.Background(), "publish-batch")
+	go func() { _, _ = p.Run(ctx) }()
+
+	in <- tradeEvent("coinbase", "BTC-USD", 1)
+
+	deadline := time.After(3 * time.Second)
+	for prod.Len() == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("nothing was published")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	span.End()
+
+	msg := prod.Messages()[0]
+	if msg.Trace == nil {
+		t.Fatal("no trace headers on a traced publish")
+	}
+	if _, ok := msg.Trace["traceparent"]; !ok {
+		t.Errorf("no W3C traceparent header; got %v", msg.Trace)
+	}
+}
+
+func TestNoTraceHeadersWhenTracingIsDisabled(t *testing.T) {
+	otel.SetTracerProvider(noop.NewTracerProvider())
+
+	prod := sink.NewMemoryProducer()
+	p := &Pipeline{
+		Producer: prod, Detector: gap.New(),
+		Encoders: testEncoders(t), Topics: testTopics(),
+		BatchSize: 10, FlushInterval: 5 * time.Millisecond,
+	}
+
+	runPipeline(t, p, make(chan model.Event, 8), []model.Event{
+		tradeEvent("coinbase", "BTC-USD", 1),
+	})
+
+	if trace := prod.Messages()[0].Trace; trace != nil {
+		t.Errorf("trace headers added with tracing disabled: %v", trace)
 	}
 }

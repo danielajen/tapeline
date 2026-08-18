@@ -19,6 +19,11 @@ import (
 	"github.com/tapeline/ingest/internal/model"
 	"github.com/tapeline/ingest/internal/schema"
 	"github.com/tapeline/ingest/internal/sink"
+	"github.com/tapeline/ingest/internal/tracing"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Pipeline consumes canonical events and publishes framed Kafka records.
@@ -118,7 +123,7 @@ func (p *Pipeline) Run(ctx context.Context) (Stats, error) {
 				continue
 			}
 
-			msg, err := p.frame(ev)
+			msg, err := p.frame(ctx, ev)
 			if err != nil {
 				stats.EncodeErrs++
 				metrics.DecodeErrors.WithLabelValues(ev.Venue).Inc()
@@ -179,28 +184,52 @@ func (p *Pipeline) checkSequence(ev model.Event, stats *Stats) (drop bool) {
 }
 
 // frame encodes an event and wraps it as a Kafka message.
-func (p *Pipeline) frame(ev model.Event) (sink.Message, error) {
+//
+// A span is started per event rather than per batch. Per batch would be
+// cheaper, but a batch spans several symbols and venues, so its duration
+// would not attribute to anything you could act on. Sampling — one percent
+// by default — is what keeps the per-event cost acceptable.
+func (p *Pipeline) frame(ctx context.Context, ev model.Event) (sink.Message, error) {
+	ctx, span := tracing.Tracer().Start(ctx, "ingest.frame",
+		trace.WithSpanKind(trace.SpanKindProducer),
+		trace.WithAttributes(tracing.VenueAttributes(ev.Venue, ev.Symbol, string(ev.Kind))...),
+	)
+	defer span.End()
+
+	fail := func(err error) (sink.Message, error) {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return sink.Message{}, err
+	}
+
 	enc, ok := p.Encoders[ev.Kind]
 	if !ok {
-		return sink.Message{}, fmt.Errorf("no encoder registered for kind %q", ev.Kind)
+		return fail(fmt.Errorf("no encoder registered for kind %q", ev.Kind))
 	}
 	topic, ok := p.Topics[ev.Kind]
 	if !ok {
-		return sink.Message{}, fmt.Errorf("no topic configured for kind %q", ev.Kind)
+		return fail(fmt.Errorf("no topic configured for kind %q", ev.Kind))
 	}
 
 	payload := ev.Payload()
 	if payload == nil {
-		return sink.Message{}, fmt.Errorf("event of kind %q carries no payload", ev.Kind)
+		return fail(fmt.Errorf("event of kind %q carries no payload", ev.Kind))
 	}
 
 	value, err := enc.Encode(payload)
 	if err != nil {
-		return sink.Message{}, err
+		return fail(err)
 	}
 
 	eventTimeUS, ingestTimeUS := timestamps(ev)
 	metrics.ObserveSourceLag(ev.Venue, string(ev.Kind), eventTimeUS, ingestTimeUS)
+
+	span.SetAttributes(
+		attribute.String("messaging.destination.name", topic),
+		attribute.Int("messaging.message.body.size", len(value)),
+		attribute.Int("tapeline.schema_id", enc.SchemaID()),
+		attribute.Int64("tapeline.source_lag_us", ingestTimeUS-eventTimeUS),
+	)
 
 	return sink.Message{
 		Topic: topic,
@@ -210,6 +239,10 @@ func (p *Pipeline) frame(ev model.Event) (sink.Message, error) {
 		TimeUS: eventTimeUS,
 		Venue:  ev.Venue,
 		Kind:   string(ev.Kind),
+		// W3C Trace Context in Kafka headers, not in the Avro payload:
+		// observability must not become part of the data schema, or every
+		// schema evolution has to reason about it.
+		Trace: tracing.InjectKafka(ctx),
 	}, nil
 }
 
