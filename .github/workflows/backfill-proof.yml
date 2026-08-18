@@ -31,7 +31,7 @@ jobs:
   replay:
     name: Replayed bars match live bars
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 55
 
     env:
       FLINK_VERSION: "1.20.1"
@@ -143,25 +143,54 @@ jobs:
           F=/tmp/flink-${FLINK_VERSION}
           export FLINK_ENV_JAVA_OPTS="--add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/java.text=ALL-UNNAMED --add-opens=java.base/java.time=ALL-UNNAMED"
 
-          submit() { "$F/bin/flink" run -d -c io.tapeline.stream.TapelineJob \
-            stream/target/tapeline-stream-0.1.0.jar "$1" 2>&1 | tee /dev/stderr \
-            | grep -oE '[0-9a-f]{32}' | head -1; }
+          # Every Flink client call is wrapped in a timeout.
+          #
+          # The first attempt at this step submitted both jobs successfully and
+          # then produced no further output for 34 minutes, until the job
+          # timeout killed it. An unbounded client call cannot be told apart
+          # from slow progress, and it consumed the whole budget without
+          # yielding a single diagnostic. Bounded calls turn a hang into a
+          # located failure.
+          submit() {
+            echo "submitting $1..." >&2
+            timeout 300 "$F/bin/flink" run -d -c io.tapeline.stream.TapelineJob \
+              stream/target/tapeline-stream-0.1.0.jar "$1" > "/tmp/submit-$1.log" 2>&1
+            local rc=$?
+            cat "/tmp/submit-$1.log" >&2
+            [ $rc -ne 0 ] && { echo "::error::submit $1 exited $rc"; return 1; }
+            grep -oE '[0-9a-f]{32}' "/tmp/submit-$1.log" | head -1
+          }
 
           # Both consume the same trades: one writes bars, one writes Iceberg.
-          BARS=$(submit trades)
-          LAKE=$(submit lakehouse)
-          echo "trades job $BARS, lakehouse job $LAKE"
+          BARS=$(submit trades) || exit 1
+          LAKE=$(submit lakehouse) || exit 1
+          echo "trades job=$BARS lakehouse job=$LAKE"
+          [ -n "$BARS" ] && [ -n "$LAKE" ] || { echo "::error::a job id was empty"; exit 1; }
 
           # Long enough for the windows to close and for Iceberg to commit,
-          # which it does on checkpoint rather than per record.
-          sleep 150
+          # which it does on checkpoint rather than per record. Progress is
+          # printed so a stall is visible while it is happening.
+          for i in $(seq 1 10); do
+            sleep 15
+            N=$(find /tmp/warehouse -name '*.parquet' 2>/dev/null | wc -l)
+            echo "  t=$((i*15))s parquet=$N states=$(timeout 30 curl -s http://localhost:8090/jobs | head -c 200)"
+          done
 
           echo "--- warehouse ---"; find /tmp/warehouse -name '*.parquet' | head -20
           PARQUET=$(find /tmp/warehouse -name '*.parquet' | wc -l)
           echo "parquet files: $PARQUET"
-          "$F/bin/flink" cancel "$BARS" || true
-          "$F/bin/flink" cancel "$LAKE" || true
-          [ "$PARQUET" -gt 0 ] || { echo "::error::lakehouse wrote no files; nothing to replay"; exit 1; }
+
+          # Cancelling can block while the Iceberg sink finishes a commit, so
+          # this is bounded too. A job left running would only waste slots the
+          # replay does not need.
+          timeout 120 "$F/bin/flink" cancel "$BARS" || echo "cancel trades timed out"
+          timeout 120 "$F/bin/flink" cancel "$LAKE" || echo "cancel lakehouse timed out"
+
+          [ "$PARQUET" -gt 0 ] || {
+            echo "::error::lakehouse wrote no files; nothing to replay"
+            tail -80 /tmp/flink-${FLINK_VERSION}/log/*taskexecutor*.log || true
+            exit 1
+          }
 
       - name: Run the replay
         env:
@@ -175,7 +204,7 @@ jobs:
           # The replay source is bounded, so this one runs to completion
           # rather than being cancelled. That is the point of a Kappa
           # backfill: it terminates.
-          "$F/bin/flink" run -c io.tapeline.stream.TapelineJob \
+          timeout 600 "$F/bin/flink" run -c io.tapeline.stream.TapelineJob \
             stream/target/tapeline-stream-0.1.0.jar backfill
 
       - name: Compare live bars against replayed bars
