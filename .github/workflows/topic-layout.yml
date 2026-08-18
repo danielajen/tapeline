@@ -1,0 +1,95 @@
+# Measures the topic-per-event-type decision instead of asserting it.
+#
+# This system publishes trades, book deltas and quotes to separate topics
+# rather than to one stream carrying a type tag. That was written down in
+# DESIGN_DECISIONS as a reasoned choice, but it was never measured, and the
+# reasoning cuts both ways: per-type topics mean a consumer fetches only what
+# it wants, at the cost of more partitions to operate and no total ordering
+# across types.
+#
+# The number worth having is read amplification - how many bytes a consumer
+# that wants one event type has to pull across the network to get them. Both
+# sides of the comparison read identical payloads, produced once in the same
+# run, so nothing but the layout differs.
+
+name: Topic layout
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tools/topicbench/**'
+      - '.github/workflows/topic-layout.yml'
+  pull_request:
+    paths:
+      - 'tools/topicbench/**'
+  workflow_dispatch:
+
+jobs:
+  compare:
+    name: Per-type topics vs one monolithic topic
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache-dependency-path: tools/topicbench/go.sum
+
+      - name: Start Kafka
+        run: |
+          docker compose -f deploy/docker-compose.yml up -d kafka
+          for i in $(seq 1 60); do
+            docker exec tapeline-kafka-1 kafka-broker-api-versions \
+              --bootstrap-server kafka:29092 >/dev/null 2>&1 && break
+            sleep 5
+          done
+          echo "kafka up"
+
+      - name: Create the benchmark topics
+        run: |
+          # Equal partition counts on both sides. Giving the monolith fewer
+          # partitions would measure partition count, not layout.
+          for t in bench.trades bench.book bench.quotes bench.all; do
+            docker exec tapeline-kafka-1 kafka-topics --bootstrap-server kafka:29092 \
+              --create --if-not-exists --topic "$t" \
+              --partitions 6 --replication-factor 1
+          done
+
+      - name: Run the comparison
+        run: |
+          cd tools/topicbench && go build -o /tmp/topicbench . && cd ../..
+          /tmp/topicbench -brokers localhost:9092 -per-type 40000 -target trade
+
+      - name: Assert the comparison actually ran
+        run: |
+          F=tools/topicbench/topicbench-results.txt
+          [ -f "$F" ] || F=topicbench-results.txt
+          [ -f "$F" ] || { echo "::error::benchmark produced no results"; exit 1; }
+          cat "$F"
+          AMP=$(grep '^read_amplification=' "$F" | cut -d= -f2)
+          # A benchmark that measured nothing would report 1.00x. The monolith
+          # carries three event types, one of which is ~5x the size of the
+          # target, so anything near parity means the run did not work.
+          python3 -c "
+          import sys
+          amp = float('$AMP')
+          print(f'read amplification: {amp:.2f}x')
+          if amp <= 1.5:
+              print('::error::amplification of {:.2f}x means the benchmark did not measure what it claims'.format(amp))
+              sys.exit(1)
+          "
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: topic-layout-results
+          path: '**/topicbench-results.txt'
+          if-no-files-found: ignore
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f deploy/docker-compose.yml down -v || true
