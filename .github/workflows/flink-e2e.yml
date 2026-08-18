@@ -226,16 +226,35 @@ jobs:
           job = json.load(urllib.request.urlopen(f"http://localhost:8090/jobs/{jid}"))
           cps = json.load(urllib.request.urlopen(f"http://localhost:8090/jobs/{jid}/checkpoints"))
 
-          quotes = int(subprocess.run(
-              ["docker","exec","tapeline-kafka-1","kafka-run-class",
-               "kafka.tools.GetOffsetShell","--bootstrap-server","kafka:29092",
-               "--topic","md.quotes.v1"],
-              capture_output=True, text=True).stdout.strip().split("\n")[-1].split(":")[-1] or 0)
+          # kafka.tools.GetOffsetShell was removed in Kafka 7.7. Calling it
+          # fails, stdout comes back empty, and the old parse turned that empty
+          # string into 0 via `or 0` - so this printed "quotes produced 0"
+          # for every run regardless of what the topic actually held. The
+          # operator was never the problem; the probe was. A probe that reports
+          # zero when it cannot measure is worse than no probe, because it
+          # reads as a real result. This one fails loudly instead.
+          probe = subprocess.run(
+              ["docker","exec","tapeline-kafka-1","kafka-get-offsets",
+               "--bootstrap-server","kafka:29092","--topic","md.quotes.v1"],
+              capture_output=True, text=True)
+          if probe.returncode != 0:
+              print(f"::error::offset probe failed: {probe.stderr.strip()}")
+              sys.exit(1)
+          # One line per partition, "topic:partition:offset".
+          quotes = sum(int(l.rsplit(":",1)[1]) for l in probe.stdout.strip().split("\n") if ":" in l)
 
           counts = cps["counts"]
           summary = cps.get("summary", {})
+          # Per-vertex, not summed into one meaningless total. The book
+          # vertex is chained with the Kafka committer, which emits nothing
+          # downstream, so its write-records is 0 by construction however many
+          # quotes it produces. Summing made written == read look like proof
+          # of zero output when it proves nothing at all.
           read = sum(v["metrics"]["read-records"] for v in job["vertices"])
           written = sum(v["metrics"]["write-records"] for v in job["vertices"])
+          for v in job["vertices"]:
+              print(f"vertex             {v['name'][:58]:58s} "
+                    f"in={v['metrics']['read-records']} out={v['metrics']['write-records']}")
 
           print(f"state              {job['state']}")
           print(f"records read       {read}")
