@@ -166,6 +166,8 @@ Measured on 17 August 2026 against live exchange feeds:
 | Source lag, continuous book streams | **29–54 ms** mean |
 | Kafka broker killed mid-stream | **0 events lost, 20 s to resume** |
 | Serving tier under k6 | **1,751 req/sec**, 350 µs median, 0.05% errors |
+| Flink book job in CI | **3 checkpoints completed, 0 failed**, avg 89 ms, 27 KB state |
+| ClickHouse range scan | **47 ms** for 1,000 bars over 45K rows |
 
 The Flink tier runs end-to-end in CI on every commit
 ([`flink-e2e.yml`](.github/workflows/flink-e2e.yml)) — the build fails unless

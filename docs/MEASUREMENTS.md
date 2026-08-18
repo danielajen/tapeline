@@ -189,7 +189,38 @@ chain_transfer → 3).
 
 Stated plainly so nothing here gets quoted as if it were measured.
 
-- **Flink runs in CI and still crash-loops.** The workflow now gets all the
+### Flink — measured in CI, 18 August 2026
+
+Run on a GitHub-hosted 16 GB runner, `md.book.v1` seeded with ~8,000
+deterministic deltas, parallelism 2, 10-second checkpoint interval.
+
+| Metric | Measured |
+|---|---|
+| Job state after 10 minutes | **RUNNING** (stable, no restarts) |
+| Records read | **7,926** |
+| Records written | **7,926** |
+| **Checkpoints completed** | **3** |
+| **Checkpoints failed** | **0** |
+| Checkpoint duration | **avg 89 ms, max 215 ms** |
+| Checkpoint state size | **27,751 bytes** |
+
+**This is what makes exactly-once a measured claim rather than a design one.**
+Flink's Kafka sink commits its transaction only when a checkpoint completes;
+three completing with zero failures means the two-phase commit is working end
+to end, and the 27 KB of state is real order-book content being persisted and
+restored, not an empty snapshot.
+
+Getting here took **seven** distinct defects — see POSTMORTEM 3 and 4. The
+last was the hardest: Kryo does not round-trip Scala collections, and the fix
+had to reach the *event* types, not just the state types.
+
+**Still open in the same run: `quotes produced = 0`.** The book operator is
+consuming and checkpointing, but nothing reached `md.quotes.v1`. Not yet
+diagnosed — the emit path runs on a processing-time timer and the sink is
+transactional, so either could be responsible. Recorded as unresolved rather
+than rounded up.
+
+- **Previously: Flink ran in CI and crash-looped.** The workflow now gets all the
   way through cluster startup and job submission — five separate defects fixed
   to get there — and the job reads records and writes 2,220 before failing on
   a Kryo serialization bug in the event types (POSTMORTEM 4). **No checkpoint
