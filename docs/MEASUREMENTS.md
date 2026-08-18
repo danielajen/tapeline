@@ -129,6 +129,28 @@ Every request was HMAC-signed with a fresh nonce, so the figure includes the
 full authentication path — signature verification, Redis nonce claim, and
 token-bucket evaluation — not just a cache read.
 
+### ClickHouse OLAP tier
+
+45,000 one-second bars loaded (3 symbols x 3 venues x 5,000 windows) into the
+schema in `deploy/clickhouse/01-bars.sql`.
+
+| Query | Measured |
+|---|---|
+| Range scan, 1,000 bars for one symbol over 10 min | **45-48 ms**, five consecutive runs |
+| Full aggregate over 45,000 bars, grouped by symbol | sub-second |
+| Rows loaded | **45,000** |
+
+The range scan is the query `WindowQueryService` issues. ~47 ms against
+ClickHouse versus a **350 us** median from the Redis hot path is the whole
+argument for the two-tier design: they are ~130x apart, and serving range
+queries out of the cache would mean either thousands of key lookups or one
+enormous serialized blob per symbol.
+
+The serving tier was not wired to ClickHouse during the load test - its OLAP
+datasource pointed at Postgres, and the endpoint under test only touches
+Redis. So the numbers above are ClickHouse measured directly, not measured
+through `QueryWindows`.
+
 ### Chaos — Kafka broker killed mid-stream
 
 | Metric | Measured |
