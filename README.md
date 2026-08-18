@@ -165,10 +165,11 @@ Measured on 17 August 2026 against live exchange feeds:
 | Decode errors / publish errors | **0 / 0** |
 | Source lag, continuous book streams | **29–54 ms** mean |
 | Kafka broker killed mid-stream | **0 events lost, 20 s to resume** |
+| Serving tier under k6 | **1,751 req/sec**, 350 µs median, 0.05% errors |
 
 **Flink, the serving tier and the backfill proof are still unmeasured**, and
 [`MEASUREMENTS.md`](docs/MEASUREMENTS.md) says so explicitly rather than
-estimating. The first live run also found three real bugs in ten minutes —
+estimating. The first live run also found five real bugs —
 including a silent 59% data loss — written up in
 [`POSTMORTEM.md`](docs/POSTMORTEM.md).
 

@@ -192,11 +192,11 @@ Before the fix:
 
 ---
 
-# Postmortem 2: three bugs the first live run found in ten minutes
+# Postmortem 2: five bugs the first live run found
 
 **Status:** all three fixed, all three now covered by regression tests
 **Detected:** 17 August 2026, first time the system was ever run end to end
-**Severity:** SEV-1 (silent 59% data loss), SEV-2 (false alerting), SEV-1 (total outage on a transient fault)
+**Severity:** SEV-1 (silent 59% data loss), SEV-2 (false alerting), SEV-1 (outage on a transient fault), plus two that stopped the serving tier starting
 
 ## Summary
 
@@ -289,3 +289,57 @@ rather than observing the run and describing what happened.
 failure" was in the design documents before any broker had ever been killed.
 It is true now. It was not true when written, and nothing except running it
 would have revealed that.
+
+
+## Bug 4 — the serving tier could not start
+
+`ReplayGuard` declares two constructors: one taking a `StringRedisTemplate`,
+one taking a clock and skew as well so tests can pin time. Neither was
+annotated. Spring cannot choose between two constructors, falls back to looking
+for a no-arg one, and the context died with:
+
+```
+NoSuchMethodException: io.tapeline.serving.security.ReplayGuard.<init>()
+```
+
+An error that names the symptom and not the cause. The 51 unit tests never saw
+it because they construct the class directly — Spring's wiring was never
+exercised until the application was started for the first time.
+
+**Fix:** `@Autowired` on the intended constructor.
+
+## Bug 5 — every database query failed after a clean startup
+
+With bug 4 fixed the context started, reported healthy, and then failed on the
+first query:
+
+```
+HikariPool-1 - jdbcUrl is required with driverClassName
+```
+
+`ServingConfig` builds both DataSource beans with `DataSourceBuilder` and
+`@ConfigurationProperties`, bypassing Spring Boot's `DataSourceProperties`.
+Hikari exposes `jdbcUrl`; the config supplied `url`. The property bound to
+nothing, and the failure surfaced per-request rather than at startup.
+
+**Fix:** `jdbc-url` in `application.yml`.
+
+**The pattern across bugs 4 and 5:** both are configuration, both were
+invisible to every unit test, and both would have been caught by a single
+`@SpringBootTest` that starts the context. There isn't one. That is the gap.
+
+## Final tally
+
+Five bugs, found in one evening, after **191 unit tests passed**:
+
+| # | Bug | Silent? | Caught by |
+|---|---|---|---|
+| 1 | Coinbase per-connection sequence | yes | live run |
+| 2 | 59% of Coinbase trades dropped | **yes** | fixing #1 made it visible |
+| 3 | Process exits on Kafka write failure | no | chaos experiment |
+| 4 | Spring cannot pick a constructor | no | first startup |
+| 5 | Hikari `url` vs `jdbcUrl` | **yes at startup** | first query |
+
+Three of the five were silent. Unit tests found none of them. Every one lived
+in a seam — between a component and a venue's real semantics, between a process
+and a broker that goes away, between code and its own configuration.

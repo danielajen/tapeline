@@ -3,7 +3,13 @@ spring:
     name: tapeline-serving
 
   datasource:
-    url: ${TAPELINE_POSTGRES_URL:jdbc:postgresql://localhost:5432/tapeline}
+    # jdbc-url, not url. These DataSource beans are built directly by
+    # DataSourceBuilder (see ServingConfig) rather than through Spring Boot's
+    # DataSourceProperties, and HikariDataSource exposes jdbcUrl. Binding
+    # `url` here starts the context cleanly and then fails on the first query
+    # with "jdbcUrl is required with driverClassName" — which names the
+    # symptom and not the cause.
+    jdbc-url: ${TAPELINE_POSTGRES_URL:jdbc:postgresql://localhost:5432/tapeline}
     username: ${TAPELINE_POSTGRES_USER:tapeline}
     password: ${TAPELINE_POSTGRES_PASSWORD:tapeline}
     driver-class-name: org.postgresql.Driver
@@ -68,7 +74,8 @@ tapeline:
     retention-days: ${TAPELINE_OLAP_RETENTION_DAYS:7}
     query-timeout-seconds: 5
     datasource:
-      url: ${TAPELINE_OLAP_URL:jdbc:clickhouse://localhost:8123/tapeline}
+      jdbc-url: ${TAPELINE_OLAP_URL:jdbc:clickhouse://localhost:8123/tapeline}
+      driver-class-name: ${TAPELINE_OLAP_DRIVER:org.postgresql.Driver}
       username: ${TAPELINE_OLAP_USER:default}
       password: ${TAPELINE_OLAP_PASSWORD:}
       hikari:

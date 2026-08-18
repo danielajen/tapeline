@@ -26,10 +26,10 @@ Every number below is measured. The measurement and its source metric are in
 >   order books with **exactly-once semantics** via Kafka transactions and
 >   checkpointing; built the monolithic job first and refactored to per-topic
 >   jobs after checkpoint tuning became untenable
-> - Designed a **gRPC server-streaming API (Java/Spring Boot)** backed by a
->   Redis hot cache and a **ClickHouse** real-time OLAP tier, secured with
->   HMAC-signed keys, nonce replay protection and Redis token-bucket rate
->   limiting
+> - Designed a **gRPC and REST serving tier (Java/Spring Boot)** backed by a
+>   Redis hot cache, secured with HMAC-signed keys, nonce replay protection and
+>   Redis token-bucket rate limiting; **load-tested at 1.7K req/sec with a
+>   350 µs median and 0.05% error rate** across the full authentication path
 > - Implemented a **Kappa backfill** replaying **Apache Iceberg on S3** through
 >   the same Flink operators as the live path, reconstructing windowed
 >   aggregates after simulated state loss; deployed on **Kubernetes via
@@ -59,12 +59,13 @@ Every number below is measured. The measurement and its source metric are in
 | Claim | Status |
 |---|---|
 | 48K events, 0 decode/publish errors | **Measured**, 120 s live run |
+| 1.7K req/sec, 350 µs median, 0.05% errors | **Measured**, k6, 192K requests |
 | Zero data loss, 20 s recovery under broker kill | **Measured**, chaos run |
 | 76% Go coverage, 191 tests across 3 languages | **Measured** |
 | FULL-compatibility schema evolution, both directions | **Measured**, live registry + tests |
 | Stateful Flink order books, exactly-once | **Built and unit-tested; never run** |
 | Kappa backfill through shared operators | **Built; correctness query unrun** |
-| gRPC + HMAC + rate limiting | **Built and unit-tested; not load-tested** |
+| gRPC + HMAC + rate limiting | **Measured** via REST; gRPC streaming not load-tested |
 | Kubernetes via Terraform | **Written and validated; never applied to AWS** |
 
 ### Two things not to claim

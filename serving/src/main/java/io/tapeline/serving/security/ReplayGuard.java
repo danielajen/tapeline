@@ -3,6 +3,7 @@ package io.tapeline.serving.security;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.concurrent.TimeUnit;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
@@ -36,6 +37,20 @@ public class ReplayGuard {
     private final Clock clock;
     private final Duration skew;
 
+    /**
+     * The constructor Spring uses.
+     *
+     * <p>Annotated explicitly because this class has two. Without the
+     * annotation Spring cannot choose between them, falls back to looking for
+     * a no-arg constructor, finds none, and the context fails to start with
+     * {@code NoSuchMethodException: ReplayGuard.<init>()} — an error that
+     * names the symptom and not the cause.
+     *
+     * <p>The unit tests never caught this because they construct the class
+     * directly. It only appeared the first time the application was actually
+     * started.
+     */
+    @Autowired
     public ReplayGuard(StringRedisTemplate redis) {
         this(redis, Clock.systemUTC(), DEFAULT_SKEW);
     }

@@ -81,6 +81,32 @@ event timestamps. With only 298 Kraken trade samples in the window, a handful
 of snapshot rows dominates the mean. The book figures — continuous streams
 with no snapshot replay — are the honest measure of transport lag.
 
+### Serving tier — k6 load test, 110 s
+
+Quote topic fed at 300/sec by `tools/quotegen` so the measurement isolates the
+serving path — Kafka consume, Redis cache, HMAC verification, nonce check,
+token-bucket rate limit, JSON response — rather than depending on Flink.
+
+| Metric | Measured |
+|---|---|
+| Requests | **192,660** |
+| Sustained rate | **1,751 req/sec** |
+| p50 latency | **350 µs** |
+| p95 latency | **14.6 ms** |
+| p99 latency | **139 ms** |
+| Error rate | **0.05%** (101 of 192,660) |
+| Quotes consumed from Kafka | **7,848, zero decode failures** |
+
+**The p99 is the honest weak spot.** A 350 µs median against a 139 ms p99 is a
+long tail, not a slow service: JVM GC pauses plus the Postgres API-key lookup
+on a cache miss. Reporting the median alone would be flattering and wrong.
+Reducing it means pre-warming the key cache and tuning the heap, neither of
+which has been done.
+
+Every request was HMAC-signed with a fresh nonce, so the figure includes the
+full authentication path — signature verification, Redis nonce claim, and
+token-bucket evaluation — not just a cache read.
+
 ### Chaos — Kafka broker killed mid-stream
 
 | Metric | Measured |
@@ -124,8 +150,6 @@ Stated plainly so nothing here gets quoted as if it were measured.
   checkpoint taken, and no exactly-once transaction committed. 4 GB of Docker
   memory does not fit Kafka plus a JobManager plus a TaskManager alongside the
   rest.
-- **Serving tier p99 and throughput.** k6 has not been run; the serving tier
-  has not been started against the live stack.
 - **Backfill correctness.** The comparison query in `BACKFILL.md` is unrun.
 - **Monolith vs per-topic comparison.** Both jobs exist; neither has been run,
   so the checkpoint-duration claim remains unquantified.
