@@ -117,6 +117,13 @@ resource "aws_eks_node_group" "general" {
 # with node-level credentials, every pod on the node can reach the lakehouse
 # bucket, including one that only needed to read a config map.
 
+locals {
+  # The OIDC issuer without its scheme. Extracted to a local because an
+  # interpolated map key must fit on one line in HCL, and inlining the
+  # replace() call twice made both lines too long to keep readable.
+  oidc_host = replace(aws_eks_cluster.main.identity[0].oidc[0].issuer, "https://", "")
+}
+
 data "tls_certificate" "eks_oidc" {
   url = aws_eks_cluster.main.identity[0].oidc[0].issuer
 }
@@ -140,10 +147,8 @@ resource "aws_iam_role" "flink_lakehouse" {
       Action    = "sts:AssumeRoleWithWebIdentity"
       Condition = {
         StringEquals = {
-          "${replace(aws_iam_openid_connect_provider.eks.url, "https://", "")}:sub" =
-            "system:serviceaccount:tapeline:flink"
-          "${replace(aws_iam_openid_connect_provider.eks.url, "https://", "")}:aud" =
-            "sts.amazonaws.com"
+          "${local.oidc_host}:sub" = "system:serviceaccount:tapeline:flink"
+          "${local.oidc_host}:aud" = "sts.amazonaws.com"
         }
       }
     }]

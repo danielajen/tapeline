@@ -114,14 +114,20 @@ jobs:
 
       - name: Coverage
         run: |
-          go test -coverprofile=coverage.out -coverpkg=./internal/...,./schemas/... ./... >/dev/null
+          go test -coverprofile=coverage.out ./... >/dev/null
           total=$(go tool cover -func=coverage.out | awk '/^total:/ {gsub("%","",$3); print $3}')
           echo "total coverage: ${total}%"
           echo "### Go coverage: ${total}%" >> "$GITHUB_STEP_SUMMARY"
+          # Per-package coverage, not -coverpkg. Cross-package coverage needs
+          # the covdata tool, which is not reliably present on the runner's
+          # toolchain, and the number it produces is not more meaningful.
+          #
           # A floor, not a target. Its job is to catch a pull request that
           # removes tests, not to encourage tests written to move a number.
-          if (( $(echo "${total} < 70" | bc -l) )); then
-            echo "::error::coverage ${total}% is below the 70% floor"
+          # Per-package sits around 63%; the statement figure quoted in the
+          # docs (76%) is the cross-package one measured locally by `make cover`.
+          if (( $(echo "${total} < 60" | bc -l) )); then
+            echo "::error::coverage ${total}% is below the 60% floor"
             exit 1
           fi
 
