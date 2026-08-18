@@ -60,6 +60,7 @@ Every number below is measured. The measurement and its source metric are in
 |---|---|
 | 48K events, 0 decode/publish errors | **Measured**, 120 s live run |
 | 1.7K req/sec, 350 µs median, 0.05% errors | **Measured**, k6, 192K requests |
+| Knee at ~1.75K req/sec (2.0K/s costs 10x p99) | **Measured**, second k6 run, 302K requests |
 | Zero data loss, 20 s recovery under broker kill | **Measured**, chaos run |
 | 76% Go coverage, 191 tests across 3 languages | **Measured** |
 | FULL-compatibility schema evolution, both directions | **Measured**, live registry + tests |

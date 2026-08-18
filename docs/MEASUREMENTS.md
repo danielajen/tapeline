@@ -97,6 +97,28 @@ token-bucket rate limit, JSON response — rather than depending on Flink.
 | Error rate | **0.05%** (101 of 192,660) |
 | Quotes consumed from Kafka | **7,848, zero decode failures** |
 
+### The second load point — where it stops scaling
+
+A second run pushed the arrival rate to 3,000/sec to find the knee:
+
+| Metric | Run A (target 2,500/s) | Run B (target 3,000/s) |
+|---|---|---|
+| Achieved throughput | **1,751 req/sec** | **2,010 req/sec** |
+| p50 | **350 µs** | **465 µs** |
+| p95 | **14.6 ms** | **410 ms** |
+| p99 | **139 ms** | **1.47 s** |
+| Error rate | 0.05% | 0.23% |
+| Requests | 192,660 | 301,558 |
+
+**This is the useful measurement.** Pushing past ~1,750 req/sec buys 15% more
+throughput and costs a 10x worse p99. The knee is real and it is where the
+service should be run. Quoting 2,010 req/sec without the latency it came with
+would be technically true and materially misleading.
+
+Both runs sign every request with a fresh nonce, so the figures cover HMAC
+verification, the Redis nonce claim and the token bucket — not just a cache
+read.
+
 **The p99 is the honest weak spot.** A 350 µs median against a 139 ms p99 is a
 long tail, not a slow service: JVM GC pauses plus the Postgres API-key lookup
 on a cache miss. Reporting the median alone would be flattering and wrong.
