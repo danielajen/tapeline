@@ -1,0 +1,213 @@
+# Kappa backfill: does replaying history through the live operators actually
+# reproduce the live aggregates?
+#
+# BACKFILL.md argues the claim structurally - BackfillJob calls
+# TradesJob.aggregate, the same method the streaming job calls, so there is no
+# second implementation of the windowing, VWAP or OHLC that could drift. That
+# argument is sound and it is not a proof. Two things can share a method and
+# still disagree, because the watermark strategy and the source differ, and
+# those are exactly the parts that decide which records land in which window.
+#
+# This runs both paths over identical trades and compares the bars.
+#
+# Scope, stated rather than implied: the warehouse here is a local Hadoop
+# catalog, not S3. The property under test is that a bounded replay through
+# the same operators reproduces the same aggregates; the filesystem behind the
+# catalog is not part of that property. Running it on S3 would test Hadoop's
+# S3A committer, which is somebody else's code.
+
+name: Backfill proof
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'stream/**'
+      - 'scripts/install-flink.sh'
+      - '.github/workflows/backfill-proof.yml'
+  workflow_dispatch:
+
+jobs:
+  replay:
+    name: Replayed bars match live bars
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    env:
+      FLINK_VERSION: "1.20.1"
+      HADOOP_VERSION: "3.3.6"
+      FLINK_SLOTS: "8"
+      TAPELINE_KAFKA_BROKERS: localhost:9092
+      TAPELINE_SCHEMA_REGISTRY_URL: http://localhost:8081
+      TAPELINE_ICEBERG_WAREHOUSE: file:///tmp/warehouse
+      # A wide window makes the comparison meaningful: with one-second bars a
+      # 30-second seed yields ~30 windows per key, enough that an off-by-one
+      # in window assignment shows up as a mismatch rather than as noise.
+      TAPELINE_WINDOW_SECONDS: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache-dependency-path: tools/quotegen/go.sum
+
+      - name: Start Kafka and Schema Registry
+        run: |
+          docker compose -f deploy/docker-compose.yml up -d kafka schema-registry
+          for i in $(seq 1 60); do
+            docker exec tapeline-kafka-1 kafka-broker-api-versions \
+              --bootstrap-server kafka:29092 >/dev/null 2>&1 && break
+            sleep 5
+          done
+          curl -fsS --retry 30 --retry-delay 5 --retry-all-errors \
+            http://localhost:8081/subjects >/dev/null
+
+      - name: Create topics
+        run: |
+          for spec in md.trades.v1:6 md.bars.v1:4 md.bars.backfill.v1:4; do
+            docker exec tapeline-kafka-1 kafka-topics --bootstrap-server kafka:29092 \
+              --create --if-not-exists --topic "${spec%%:*}" \
+              --partitions "${spec##*:}" --replication-factor 1
+          done
+
+      - name: Seed trades
+        id: seed
+        run: |
+          cd tools/quotegen && go build -o /tmp/gen . && cd ../..
+          SCHEMA=$(python3 -c "import json;print(json.dumps(open('ingest/schemas/avro/trade.v1.avsc').read()))")
+          ID=$(curl -s -X POST -H "Content-Type: application/vnd.schemaregistry.v1+json" \
+            --data "{\"schema\": $SCHEMA}" \
+            http://localhost:8081/subjects/md.trades.v1-value/versions \
+            | python3 -c "import json,sys;print(json.load(sys.stdin)['id'])")
+
+          # The replay window is taken from wall clock either side of the seed
+          # rather than from the data, with a margin. A window that clipped the
+          # first or last bar would produce a mismatch that looks like a
+          # correctness failure and is actually a bad query.
+          START_US=$(( ($(date +%s) - 5) * 1000000 ))
+          /tmp/gen -kind trade -schema-id "$ID" -rate 300 -duration 30s \
+            -topic md.trades.v1 -schema ingest/schemas/avro/trade.v1.avsc
+          END_US=$(( ($(date +%s) + 5) * 1000000 ))
+
+          echo "start_us=$START_US" >> "$GITHUB_OUTPUT"
+          echo "end_us=$END_US" >> "$GITHUB_OUTPUT"
+          N=$(docker exec tapeline-kafka-1 kafka-get-offsets \
+            --bootstrap-server kafka:29092 --topic md.trades.v1 | awk -F: '{s+=$3} END{print s+0}')
+          echo "seeded $N trades over [$START_US, $END_US)"
+          [ "$N" -gt 1000 ] || { echo "::error::only $N trades seeded"; exit 1; }
+
+      - name: Build the stream jar
+        run: cd stream && mvn -B -q package -DskipTests
+
+      - name: Install Flink with Iceberg and Hadoop
+        run: |
+          scripts/install-flink.sh
+          F=/tmp/flink-${FLINK_VERSION}
+
+          # The Iceberg runtime is `provided` in the pom, so it must be on the
+          # cluster rather than in the job jar.
+          find ~/.m2 -name 'iceberg-flink-runtime-*.jar' ! -name '*sources*' \
+            -exec cp {} "$F/lib/" \; || true
+
+          # The Hadoop catalog needs Hadoop itself, which Flink stopped
+          # bundling. HADOOP_CLASSPATH is the supported way to supply it.
+          curl -fsSL -o /tmp/hadoop.tgz \
+            "https://archive.apache.org/dist/hadoop/common/hadoop-${HADOOP_VERSION}/hadoop-${HADOOP_VERSION}.tar.gz"
+          tar -xzf /tmp/hadoop.tgz -C /tmp
+          echo "HADOOP_HOME=/tmp/hadoop-${HADOOP_VERSION}" >> "$GITHUB_ENV"
+
+          "$F/bin/stop-cluster.sh" || true
+          export HADOOP_CLASSPATH=$(/tmp/hadoop-${HADOOP_VERSION}/bin/hadoop classpath)
+          echo "HADOOP_CLASSPATH=$HADOOP_CLASSPATH" >> "$GITHUB_ENV"
+          HADOOP_CLASSPATH="$HADOOP_CLASSPATH" "$F/bin/start-cluster.sh"
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:8090/overview >/dev/null 2>&1 && break
+            sleep 2
+          done
+          mkdir -p /tmp/warehouse
+          echo "cluster up with Iceberg and Hadoop"
+
+      - name: Run the live path
+        env:
+          TAPELINE_BACKFILL_START_US: ${{ steps.seed.outputs.start_us }}
+          TAPELINE_BACKFILL_END_US: ${{ steps.seed.outputs.end_us }}
+        run: |
+          F=/tmp/flink-${FLINK_VERSION}
+          export FLINK_ENV_JAVA_OPTS="--add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/java.text=ALL-UNNAMED --add-opens=java.base/java.time=ALL-UNNAMED"
+
+          submit() { "$F/bin/flink" run -d -c io.tapeline.stream.TapelineJob \
+            stream/target/tapeline-stream-0.1.0.jar "$1" 2>&1 | tee /dev/stderr \
+            | grep -oE '[0-9a-f]{32}' | head -1; }
+
+          # Both consume the same trades: one writes bars, one writes Iceberg.
+          BARS=$(submit trades)
+          LAKE=$(submit lakehouse)
+          echo "trades job $BARS, lakehouse job $LAKE"
+
+          # Long enough for the windows to close and for Iceberg to commit,
+          # which it does on checkpoint rather than per record.
+          sleep 150
+
+          echo "--- warehouse ---"; find /tmp/warehouse -name '*.parquet' | head -20
+          PARQUET=$(find /tmp/warehouse -name '*.parquet' | wc -l)
+          echo "parquet files: $PARQUET"
+          "$F/bin/flink" cancel "$BARS" || true
+          "$F/bin/flink" cancel "$LAKE" || true
+          [ "$PARQUET" -gt 0 ] || { echo "::error::lakehouse wrote no files; nothing to replay"; exit 1; }
+
+      - name: Run the replay
+        env:
+          TAPELINE_BACKFILL_START_US: ${{ steps.seed.outputs.start_us }}
+          TAPELINE_BACKFILL_END_US: ${{ steps.seed.outputs.end_us }}
+          TAPELINE_TOPIC_BARS: md.bars.backfill.v1
+        run: |
+          F=/tmp/flink-${FLINK_VERSION}
+          export FLINK_ENV_JAVA_OPTS="--add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/java.text=ALL-UNNAMED --add-opens=java.base/java.time=ALL-UNNAMED"
+
+          # The replay source is bounded, so this one runs to completion
+          # rather than being cancelled. That is the point of a Kappa
+          # backfill: it terminates.
+          "$F/bin/flink" run -c io.tapeline.stream.TapelineJob \
+            stream/target/tapeline-stream-0.1.0.jar backfill
+
+      - name: Compare live bars against replayed bars
+        run: |
+          dump() {
+            timeout 120 docker exec tapeline-schema-registry-1 \
+              kafka-avro-console-consumer \
+              --bootstrap-server kafka:29092 \
+              --property schema.registry.url=http://schema-registry:8081 \
+              --topic "$1" --from-beginning --timeout-ms 20000 2>/dev/null > "$2" || true
+            echo "$1 -> $(wc -l < "$2") records"
+          }
+          dump md.bars.v1          /tmp/live.jsonl
+          dump md.bars.backfill.v1 /tmp/replay.jsonl
+          python3 scripts/compare_bars.py /tmp/live.jsonl /tmp/replay.jsonl | tee backfill-proof-results.txt
+
+      - name: Flink logs on failure
+        if: failure()
+        run: tail -150 /tmp/flink-${FLINK_VERSION}/log/*taskexecutor*.log || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backfill-proof-results
+          path: |
+            backfill-proof-results.txt
+            /tmp/live.jsonl
+            /tmp/replay.jsonl
+          if-no-files-found: ignore
+
+      - name: Tear down
+        if: always()
+        run: |
+          /tmp/flink-${FLINK_VERSION}/bin/stop-cluster.sh || true
+          docker compose -f deploy/docker-compose.yml down -v || true
