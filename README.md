@@ -136,9 +136,9 @@ make chaos      # kill the broker, a TaskManager, Redis, the network
 
 | Suite | Tests | Notes |
 |---|---|---|
-| Go | 63 | Race detector clean, **76.1%** statement coverage |
+| Go | 69 | Race detector clean, **76%** statement coverage |
 | Scala | 54 | Order books, rolling stats, aggregates, divergence, codecs |
-| Java | 51 | HMAC, replay, rate limiting, fan-out, Avro framing |
+| Java | 51 unit + 10 integration | HMAC, replay, rate limiting, fan-out, Avro framing; Testcontainers against real Kafka + Postgres |
 
 Three tests worth pointing at specifically:
 
@@ -157,14 +157,20 @@ Three tests worth pointing at specifically:
 
 ## Measurements
 
-**Throughput, latency and recovery numbers are not filled in yet, and the
-placeholders in [`MEASUREMENTS.md`](docs/MEASUREMENTS.md) say so explicitly.**
+Measured on 17 August 2026 against live exchange feeds:
 
-That file names the exact command that produces each number. A made-up p99 is
-worse than no p99, because the next question is always how it was measured.
+| | |
+|---|---|
+| Events published, 120 s run | **48,036** (400/sec, 3 venues, 3 symbols) |
+| Decode errors / publish errors | **0 / 0** |
+| Source lag, continuous book streams | **29–54 ms** mean |
+| Kafka broker killed mid-stream | **0 events lost, 20 s to resume** |
 
-What *is* measured today: test counts, coverage, and the fact that the whole
-suite passes under `-race`.
+**Flink, the serving tier and the backfill proof are still unmeasured**, and
+[`MEASUREMENTS.md`](docs/MEASUREMENTS.md) says so explicitly rather than
+estimating. The first live run also found three real bugs in ten minutes —
+including a silent 59% data loss — written up in
+[`POSTMORTEM.md`](docs/POSTMORTEM.md).
 
 ---
 

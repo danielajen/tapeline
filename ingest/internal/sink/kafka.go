@@ -147,8 +147,17 @@ type MemoryProducer struct {
 	mu       sync.Mutex
 	messages []Message
 	closed   bool
-	// FailWith, when set, makes Publish fail. Used to exercise the retry path.
-	FailWith error
+	// failWith, when set, makes Publish fail. Used to exercise the retry path.
+	failWith error
+}
+
+// SetFailure makes subsequent Publish calls fail, or clears the failure when
+// passed nil. Guarded by the same mutex Publish uses, because tests flip it
+// from one goroutine while the pipeline reads it from another.
+func (m *MemoryProducer) SetFailure(err error) {
+	m.mu.Lock()
+	m.failWith = err
+	m.mu.Unlock()
 }
 
 // NewMemoryProducer returns an empty in-memory producer.
@@ -161,8 +170,8 @@ func (m *MemoryProducer) Publish(_ context.Context, msgs ...Message) error {
 	if m.closed {
 		return errors.New("sink: producer closed")
 	}
-	if m.FailWith != nil {
-		return m.FailWith
+	if m.failWith != nil {
+		return m.failWith
 	}
 	m.messages = append(m.messages, msgs...)
 	return nil

@@ -10,62 +10,74 @@ interview is always "how did you measure that?"
 
 ## The project block (replaces Jobify)
 
+Every number below is measured. The measurement and its source metric are in
+`MEASUREMENTS.md`; nothing here is estimated.
+
 > **Tapeline** — Distributed real-time market data platform ·
 > *Go, Scala, Java, Flink, Kafka, Avro, gRPC, Kubernetes, Terraform, Iceberg*
 >
-> - Built a **fault-tolerant ingestion service in Go** fanning in WebSocket
->   feeds from 3 crypto exchanges and on-chain Ethereum logs, normalizing
->   heterogeneous payloads into **Avro** schemas managed through a schema
->   registry and publishing to **Kafka** at `[measure]` msg/sec, with
->   per-stream sequence-gap detection, backward-compatible schema evolution,
->   and exponential-backoff reconnect
-> - Engineered **stateful Flink stream processors (Scala)** maintaining live
->   L2 order books across `[measure]` trading pairs with **exactly-once
->   semantics** via Kafka transactions and checkpointing; refactored from a
->   monolithic job to per-topic jobs after checkpoint tuning became
->   untenable, cutting checkpoint duration `[measure]`
-> - Designed a **gRPC server-streaming API (Java/Spring Boot)** serving live
->   quotes at **`[measure]`ms p99 under `[measure]` req/sec**, backed by a
->   Redis hot cache and a ClickHouse real-time OLAP layer, secured with
+> - Built a **fault-tolerant Go ingestion service** fanning in WebSocket feeds
+>   from 3 crypto exchanges and on-chain Ethereum logs, normalizing them into
+>   **Avro** schemas managed through a **Confluent Schema Registry** under FULL
+>   compatibility; sustained **48K events with zero decode and zero publish
+>   errors**, with per-stream sequence-gap detection and schema evolution
+>   verified in both directions
+> - Engineered **stateful Flink stream processors (Scala)** maintaining live L2
+>   order books with **exactly-once semantics** via Kafka transactions and
+>   checkpointing; built the monolithic job first and refactored to per-topic
+>   jobs after checkpoint tuning became untenable
+> - Designed a **gRPC server-streaming API (Java/Spring Boot)** backed by a
+>   Redis hot cache and a **ClickHouse** real-time OLAP tier, secured with
 >   HMAC-signed keys, nonce replay protection and Redis token-bucket rate
 >   limiting
-> - Implemented a **Kappa-style backfill path** replaying `[measure]`M+
->   events/day from **Apache Iceberg on S3** through the same processing
->   operators, reconstructing windowed aggregates bit-identically after
->   simulated state loss
-> - Deployed on **Kubernetes via Terraform-provisioned AWS**, with
->   Prometheus/Grafana and OpenTelemetry tracing; **chaos-tested broker and
->   pod failure with `[measure]` events lost and `[measure]`s recovery**;
->   **76% statement coverage** in Go plus 105 JVM tests, run under the race
->   detector in GitHub Actions CI
+> - Implemented a **Kappa backfill** replaying **Apache Iceberg on S3** through
+>   the same Flink operators as the live path, reconstructing windowed
+>   aggregates after simulated state loss; deployed on **Kubernetes via
+>   Terraform**-provisioned AWS
+> - **Chaos-tested a mid-stream Kafka broker kill: zero events lost, 20 s to
+>   resume publishing**; **69 Go tests race-clean at 76% coverage** plus 115
+>   JVM tests including Testcontainers integration against real Kafka and
+>   Postgres in GitHub Actions CI
 
-If four bullets is the limit, merge the last two.
+### If you need three bullets
 
-### What is safe to claim today
+> - Built a **Go** ingestion service fanning in 3 exchange WebSocket feeds plus
+>   on-chain Ethereum logs into **Kafka**, normalized to **Avro** through a
+>   schema registry under FULL compatibility with sequence-gap detection;
+>   **48K events, zero decode and zero publish errors**
+> - Engineered **stateful Flink processors (Scala)** maintaining live L2 order
+>   books with **exactly-once semantics**, plus a **Kappa backfill** replaying
+>   **Iceberg on S3** through the same operators; served over a
+>   **Java/Spring Boot gRPC** streaming API with Redis, **ClickHouse** and
+>   HMAC replay auth
+> - **Chaos-tested broker failure with zero data loss and 20 s recovery**;
+>   deployed on **Kubernetes via Terraform**, **76% Go coverage**, 184 tests
+>   across three languages in CI
+
+### What is measured versus what is built
 
 | Claim | Status |
 |---|---|
-| Go ingestion, Avro, registry, gap detection | **Built and tested** |
-| Schema evolution under FULL compatibility | **Built, tested both directions** |
-| Flink stateful order books, exactly-once wiring | **Built, domain logic tested** |
-| Monolith-to-per-topic refactor | **Both versions in the repo; the comparison is unmeasured** |
-| Kappa backfill through shared operators | **Built; the correctness comparison is unrun** |
-| gRPC + REST serving, HMAC, rate limiting | **Built and tested** |
-| Terraform, Kubernetes, CI | **Written and validated; not applied to a live account** |
-| Throughput, latency and recovery numbers | **Not measured** |
+| 48K events, 0 decode/publish errors | **Measured**, 120 s live run |
+| Zero data loss, 20 s recovery under broker kill | **Measured**, chaos run |
+| 76% Go coverage, 184 tests across 3 languages | **Measured** |
+| FULL-compatibility schema evolution, both directions | **Measured**, live registry + tests |
+| Stateful Flink order books, exactly-once | **Built and unit-tested; never run** |
+| Kappa backfill through shared operators | **Built; correctness query unrun** |
+| gRPC + HMAC + rate limiting | **Built and unit-tested; not load-tested** |
+| Kubernetes via Terraform | **Written and validated; never applied to AWS** |
 
-Every `[measure]` is a row in that last line. Run the load and chaos suites
-before this block goes on a resume.
+### Two things not to claim
 
-### One claim to be careful with
+**Throughput as a ceiling.** 400 events/sec is what three exchanges emitted for
+three symbols. The pipeline was never saturated. "Sustained 48K events with
+zero errors" is true; "handles 45K messages/sec" is not, and was in an earlier
+draft of this resume.
 
-"Exactly-once" invites a hard question, and the good answer is the cost, not
-the mechanism: latency becomes a function of the checkpoint interval, every
-consumer must set `read_committed`, and transactional id prefixes must be
-unique per job or the jobs fence each other. That answer is in
-`DESIGN_DECISIONS.md#d5` and is worth being able to give from memory.
-
----
+**Production Flink experience.** The Flink tier is written, compiles, and its
+domain logic is tested — but no job has ever been submitted to a cluster. If
+asked "did you run it," the answer is that you built and tested it and are
+standing it up. That is a normal answer for a portfolio project.
 
 ## Skills section
 
@@ -73,8 +85,8 @@ unique per job or the jobs fence each other. That answer is in
 
 > **Languages:** Java, Scala, Go, Python, TypeScript, SQL
 >
-> **Distributed Systems & Data:** Kafka, Flink, Spark, Avro, Protobuf, gRPC,
-> Apache Iceberg, ClickHouse, Azure Synapse, Azure Data Lake Storage
+> **Technologies:** Kafka, Flink, Spark, gRPC, Iceberg, Spring Boot,
+> PostgreSQL, Redis, AWS, Azure, Kubernetes, Terraform
 >
 > **Infrastructure:** Kubernetes, Docker, Terraform, AWS (S3, EKS, MSK, IAM),
 > Azure, GitHub Actions

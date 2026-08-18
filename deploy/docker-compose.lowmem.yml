@@ -1,0 +1,63 @@
+# Memory overrides for an 8GB laptop with ~4GB allocated to Docker.
+#
+# The reference deployment in docker-compose.yml is sized so each service has
+# headroom. This file exists because the measurement runs had to happen on a
+# machine where the full stack does not fit, and shrinking heaps is a more
+# honest answer than quietly running a subset and reporting the numbers as if
+# they came from the whole thing.
+#
+#   docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.lowmem.yml up -d <services>
+#
+# Numbers produced under these settings are noted as such in MEASUREMENTS.md.
+services:
+  kafka:
+    environment:
+      KAFKA_HEAP_OPTS: "-Xmx512m -Xms512m"
+    deploy:
+      resources:
+        limits: { memory: 900M }
+
+  schema-registry:
+    environment:
+      SCHEMA_REGISTRY_HEAP_OPTS: "-Xmx256m -Xms256m"
+    deploy:
+      resources:
+        limits: { memory: 500M }
+
+  jobmanager:
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: jobmanager
+        jobmanager.memory.process.size: 900m
+        state.backend.type: rocksdb
+        state.checkpoints.dir: file:///flink-checkpoints
+        state.savepoints.dir: file:///flink-savepoints
+        execution.checkpointing.interval: 30s
+        execution.checkpointing.min-pause: 5s
+        execution.checkpointing.timeout: 2min
+        metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporterFactory
+        metrics.reporter.prom.port: 9249
+    deploy:
+      resources:
+        limits: { memory: 1G }
+
+  taskmanager:
+    # One, not two. Parallelism 2 still exercises keyed state distribution.
+    scale: 1
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: jobmanager
+        taskmanager.numberOfTaskSlots: 4
+        taskmanager.memory.process.size: 1400m
+        state.backend.type: rocksdb
+        state.checkpoints.dir: file:///flink-checkpoints
+        metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporterFactory
+        metrics.reporter.prom.port: 9249
+    deploy:
+      resources:
+        limits: { memory: 1600M }
+
+  prometheus:
+    deploy:
+      resources:
+        limits: { memory: 300M }

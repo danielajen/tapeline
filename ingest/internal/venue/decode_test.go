@@ -413,3 +413,88 @@ func contains(haystack, needle string) bool {
 	}
 	return false
 }
+
+// A Coinbase frame can carry several trades. The sequence number belongs to
+// the frame, so stamping it on every trade makes all but the first look like
+// duplicates — and the pipeline drops them.
+//
+// A live run published 641 of 1,575 Coinbase trades before this was fixed:
+// 59% real data loss, counted as "duplicates suppressed", which is the shape
+// of bug that never trips an alert.
+func TestCoinbaseMultiTradeFrameDoesNotLoseTrades(t *testing.T) {
+	raw := []byte(`{
+	  "channel": "market_trades",
+	  "timestamp": "2026-08-17T12:00:00.123456Z",
+	  "sequence_num": 77,
+	  "events": [{
+	    "type": "update",
+	    "trades": [
+	      {"trade_id":"1","product_id":"BTC-USD","price":"64000.00","size":"0.1","side":"BUY","time":"2026-08-17T11:59:59.900000Z"},
+	      {"trade_id":"2","product_id":"BTC-USD","price":"64001.00","size":"0.2","side":"SELL","time":"2026-08-17T11:59:59.910000Z"},
+	      {"trade_id":"3","product_id":"BTC-USD","price":"64002.00","size":"0.3","side":"BUY","time":"2026-08-17T11:59:59.920000Z"}
+	    ]
+	  }]
+	}`)
+
+	events, err := NewCoinbase([]string{"BTC-USD"}).Decode(raw, testNow)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if len(events) != 3 {
+		t.Fatalf("got %d events, want all 3 trades", len(events))
+	}
+
+	// Only the first carries the frame sequence; the rest are unsequenced so
+	// the gap detector cannot mistake them for repeats.
+	if events[0].Sequence != 77 {
+		t.Errorf("first trade sequence = %d, want the frame's 77", events[0].Sequence)
+	}
+	for i, ev := range events[1:] {
+		if ev.Sequence != model.NoSequence {
+			t.Errorf("trade %d sequence = %d, want NoSequence", i+1, ev.Sequence)
+		}
+	}
+
+	// Every trade must survive intact — identity comes from trade_id.
+	for i, want := range []string{"1", "2", "3"} {
+		if events[i].Trade.TradeID != want {
+			t.Errorf("trade %d id = %q, want %q", i, events[i].Trade.TradeID, want)
+		}
+	}
+	if events[2].Trade.Price != 64002.00 {
+		t.Errorf("last trade price = %v, want 64002", events[2].Trade.Price)
+	}
+}
+
+// The same hazard on the level2 path: one frame can carry updates for
+// several products.
+func TestCoinbaseMultiProductL2FrameDoesNotLoseUpdates(t *testing.T) {
+	raw := []byte(`{
+	  "channel": "l2_data",
+	  "timestamp": "2026-08-17T12:00:00.000000Z",
+	  "sequence_num": 88,
+	  "events": [
+	    {"type":"update","product_id":"BTC-USD","updates":[
+	      {"side":"bid","event_time":"2026-08-17T11:59:59.000000Z","price_level":"64000.00","new_quantity":"1.5"}]},
+	    {"type":"update","product_id":"ETH-USD","updates":[
+	      {"side":"offer","event_time":"2026-08-17T11:59:59.000000Z","price_level":"3100.00","new_quantity":"2.0"}]}
+	  ]
+	}`)
+
+	events, err := NewCoinbase([]string{"BTC-USD", "ETH-USD"}).Decode(raw, testNow)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("got %d events, want 2 product updates", len(events))
+	}
+	if events[0].Sequence != 88 {
+		t.Errorf("first update sequence = %d, want 88", events[0].Sequence)
+	}
+	if events[1].Sequence != model.NoSequence {
+		t.Errorf("second update sequence = %d, want NoSequence", events[1].Sequence)
+	}
+	if events[1].Symbol != "ETH-USD" {
+		t.Errorf("second update symbol = %q, want ETH-USD", events[1].Symbol)
+	}
+}

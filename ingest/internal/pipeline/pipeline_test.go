@@ -256,32 +256,97 @@ func TestFlushIntervalReleasesPartialBatches(t *testing.T) {
 	}
 }
 
-func TestPublishFailureSurfaces(t *testing.T) {
+// A publish failure must NOT stop the pipeline.
+//
+// It used to: a single failed write returned an error from Run and the process
+// exited. The first live chaos run killed the Kafka broker and ended with the
+// ingestion tier dead, disproving the "survives broker failure" claim outright.
+// A broker restart is transient; the batch is still in memory and the right
+// response is to retry it, not to quit.
+func TestPublishFailureIsRetriedNotFatal(t *testing.T) {
 	prod := sink.NewMemoryProducer()
-	prod.FailWith = errors.New("broker unavailable")
+	prod.SetFailure(errors.New("broker unavailable"))
 
-	in := make(chan model.Event, 4)
+	in := make(chan model.Event, 8)
 	p := &Pipeline{
 		In:       in,
 		Producer: prod, Detector: gap.New(),
 		Encoders: testEncoders(t), Topics: testTopics(),
-		BatchSize: 1, FlushInterval: time.Hour,
+		BatchSize: 1, FlushInterval: 5 * time.Millisecond,
 	}
 
-	errCh := make(chan error, 1)
+	done := make(chan Stats, 1)
 	go func() {
-		_, err := p.Run(context.Background())
-		errCh <- err
+		st, err := p.Run(context.Background())
+		if err != nil {
+			t.Errorf("Run returned %v; a transient publish failure must not be fatal", err)
+		}
+		done <- st
 	}()
+
 	in <- tradeEvent("coinbase", "BTC-USD", 1)
+	time.Sleep(60 * time.Millisecond)
+
+	// The broker comes back.
+	prod.SetFailure(nil)
+	in <- tradeEvent("coinbase", "BTC-USD", 2)
+	close(in)
 
 	select {
-	case err := <-errCh:
-		if err == nil {
-			t.Fatal("a failed publish returned nil; data loss would be silent")
+	case st := <-done:
+		if st.PublishFailures == 0 {
+			t.Error("publish failures were not counted")
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("pipeline did not report the publish failure")
+		if st.Dropped != 0 {
+			t.Errorf("dropped %d events; the buffer was nowhere near full", st.Dropped)
+		}
+		// Both events must survive the outage — the retained batch is retried.
+		if prod.Len() != 2 {
+			t.Errorf("published %d, want 2 — events buffered during the outage were lost", prod.Len())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("pipeline did not finish")
+	}
+}
+
+// Retention is bounded. An outage longer than the buffer drops the oldest and
+// counts them, because an OOM kill loses everything silently whereas a counted
+// drop is something an alert can fire on.
+func TestRetryBufferIsBoundedAndDropsAreCounted(t *testing.T) {
+	prod := sink.NewMemoryProducer()
+	prod.SetFailure(errors.New("broker down"))
+
+	in := make(chan model.Event, 64)
+	p := &Pipeline{
+		In:       in,
+		Producer: prod, Detector: gap.New(),
+		Encoders: testEncoders(t), Topics: testTopics(),
+		BatchSize: 1, FlushInterval: 2 * time.Millisecond,
+		MaxPendingEvents: 5,
+	}
+
+	done := make(chan Stats, 1)
+	go func() {
+		st, _ := p.Run(context.Background())
+		done <- st
+	}()
+
+	for i := int64(1); i <= 40; i++ {
+		in <- tradeEvent("coinbase", "BTC-USD", i)
+	}
+	time.Sleep(200 * time.Millisecond)
+	close(in)
+
+	select {
+	case st := <-done:
+		if st.Dropped == 0 {
+			t.Error("no drops recorded despite a full buffer")
+		}
+		if st.Dropped >= 40 {
+			t.Errorf("dropped %d of 40; the buffer retained nothing", st.Dropped)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("pipeline did not finish")
 	}
 }
 
@@ -371,5 +436,97 @@ func TestNoTraceHeadersWhenTracingIsDisabled(t *testing.T) {
 
 	if trace := prod.Messages()[0].Trace; trace != nil {
 		t.Errorf("trace headers added with tracing disabled: %v", trace)
+	}
+}
+
+// Coinbase Advanced Trade stamps one monotonic sequence_num on every envelope
+// across every product and channel on the socket. Keying gap detection on
+// (venue, symbol, channel) splits that single counter across every stream, and
+// each one sees a number that jumps — reported as a gap that never happened.
+//
+// The first live run produced 1,915 phantom gaps in 45 seconds from Coinbase
+// while Kraken and Binance produced none. This pins the fix.
+func TestConnectionScopedVenuesDoNotReportPhantomGaps(t *testing.T) {
+	prod := sink.NewMemoryProducer()
+	p := &Pipeline{
+		Producer: prod, Detector: gap.New(),
+		Encoders: testEncoders(t), Topics: testTopics(),
+		BatchSize: 20, FlushInterval: 5 * time.Millisecond,
+		ConnectionScopedVenues: map[string]bool{"coinbase": true},
+	}
+
+	// One connection-level counter interleaved across three symbols, exactly
+	// as Coinbase delivers it. Per-stream keying would see 1,4,7 on BTC and
+	// call every step a gap.
+	events := []model.Event{
+		tradeEvent("coinbase", "BTC-USD", 1),
+		tradeEvent("coinbase", "ETH-USD", 2),
+		tradeEvent("coinbase", "SOL-USD", 3),
+		tradeEvent("coinbase", "BTC-USD", 4),
+		tradeEvent("coinbase", "ETH-USD", 5),
+		tradeEvent("coinbase", "SOL-USD", 6),
+	}
+
+	stats := runPipeline(t, p, make(chan model.Event, 16), events)
+
+	if stats.Gaps != 0 {
+		t.Errorf("gaps = %d, want 0 — the connection counter is contiguous", stats.Gaps)
+	}
+	if stats.Missed != 0 {
+		t.Errorf("missed = %d, want 0", stats.Missed)
+	}
+	if prod.Len() != 6 {
+		t.Errorf("published %d, want 6", prod.Len())
+	}
+}
+
+// A genuine drop on a connection-scoped venue must still be caught.
+func TestConnectionScopedVenuesStillDetectRealGaps(t *testing.T) {
+	prod := sink.NewMemoryProducer()
+	p := &Pipeline{
+		Producer: prod, Detector: gap.New(),
+		Encoders: testEncoders(t), Topics: testTopics(),
+		BatchSize: 20, FlushInterval: 5 * time.Millisecond,
+		ConnectionScopedVenues: map[string]bool{"coinbase": true},
+	}
+
+	stats := runPipeline(t, p, make(chan model.Event, 16), []model.Event{
+		tradeEvent("coinbase", "BTC-USD", 1),
+		tradeEvent("coinbase", "ETH-USD", 2),
+		tradeEvent("coinbase", "BTC-USD", 9), // 3..8 genuinely lost
+	})
+
+	if stats.Gaps != 1 {
+		t.Errorf("gaps = %d, want 1", stats.Gaps)
+	}
+	if stats.Missed != 6 {
+		t.Errorf("missed = %d, want 6", stats.Missed)
+	}
+}
+
+// Per-stream venues must be unaffected by the fix.
+func TestPerStreamVenuesKeepIndependentSequences(t *testing.T) {
+	prod := sink.NewMemoryProducer()
+	p := &Pipeline{
+		Producer: prod, Detector: gap.New(),
+		Encoders: testEncoders(t), Topics: testTopics(),
+		BatchSize: 20, FlushInterval: 5 * time.Millisecond,
+		ConnectionScopedVenues: map[string]bool{"coinbase": true},
+	}
+
+	// Kraken sequences per symbol, so these are three independent streams
+	// each starting at 1 — not a triple-duplicate.
+	stats := runPipeline(t, p, make(chan model.Event, 16), []model.Event{
+		tradeEvent("kraken", "BTC-USD", 1),
+		tradeEvent("kraken", "ETH-USD", 1),
+		tradeEvent("kraken", "SOL-USD", 1),
+		tradeEvent("kraken", "BTC-USD", 2),
+	})
+
+	if stats.Gaps != 0 || stats.Duplicates != 0 {
+		t.Errorf("gaps=%d duplicates=%d, want 0/0", stats.Gaps, stats.Duplicates)
+	}
+	if prod.Len() != 4 {
+		t.Errorf("published %d, want 4", prod.Len())
 	}
 }

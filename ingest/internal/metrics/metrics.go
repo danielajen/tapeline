@@ -98,6 +98,14 @@ var (
 		Help: "Buffered events awaiting publish.",
 	}, []string{"stage"})
 
+	// EventsDropped counts events discarded because the publish retry buffer
+	// filled up. This is the real data-loss counter: publish_errors_total can
+	// be non-zero with zero loss if the broker comes back in time.
+	EventsDropped = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace, Subsystem: "ingest", Name: "events_dropped_total",
+		Help: "Events dropped because the publish retry buffer was full.",
+	})
+
 	// SchemaRegistrations counts schema registry registrations by subject.
 	SchemaRegistrations = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace, Subsystem: "ingest", Name: "schema_registrations_total",
@@ -109,7 +117,7 @@ var collectors = []prometheus.Collector{
 	EventsReceived, EventsPublished, PublishErrors, DecodeErrors,
 	SequenceGaps, SequenceMessagesMissed, DuplicatesDropped,
 	Reconnects, ConnectionUp, SourceLagSeconds, PublishLatencySeconds,
-	PipelineQueueDepth, SchemaRegistrations,
+	PipelineQueueDepth, SchemaRegistrations, EventsDropped,
 }
 
 // Registry is the process registry. It is separate from the default

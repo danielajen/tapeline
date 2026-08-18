@@ -1,4 +1,4 @@
-# Postmortem: every Binance trade was recorded on the wrong side
+# Postmortem 1: every Binance trade was recorded on the wrong side
 
 **Status:** resolved
 **Severity:** SEV-2 — silent data corruption, one of three venues
@@ -188,3 +188,104 @@ Before the fix:
 --- FAIL: TestBinanceDecodeTradeAggressorSide
     decode_test.go:256: m=false side = "SELL", want BUY
 ```
+
+
+---
+
+# Postmortem 2: three bugs the first live run found in ten minutes
+
+**Status:** all three fixed, all three now covered by regression tests
+**Detected:** 17 August 2026, first time the system was ever run end to end
+**Severity:** SEV-1 (silent 59% data loss), SEV-2 (false alerting), SEV-1 (total outage on a transient fault)
+
+## Summary
+
+Every unit test passed. 168 of them, race-detector clean. The Go tier built,
+the Scala tier built, the shaded jar built. Then the system was pointed at
+live exchange feeds for the first time and produced three distinct bugs inside
+ten minutes — none of which any unit test could have caught, because all three
+were about the *interaction* between components and the real world.
+
+## Bug 1 — 1,915 phantom sequence gaps in 45 seconds
+
+**Symptom.** Coinbase reported 1,637 book gaps and 278 trade gaps and 11,161
+"missed" messages. Kraken and Binance reported zero.
+
+**Cause.** Coinbase Advanced Trade stamps one monotonic `sequence_num` on every
+envelope across every product and channel on the socket. The gap detector keyed
+on `(venue, symbol, channel)`, splitting that single counter across six streams.
+Each stream then saw a number advancing by roughly six per message and called
+every step a gap.
+
+The adapter's own doc comment said the sequence was per-connection. The
+detector was keyed per-stream anyway. **The comment and the code disagreed, and
+the tests asserted the code.**
+
+**Fix.** `Pipeline.ConnectionScopedVenues` — venues whose counter describes the
+connection collapse to a single detector key.
+
+**Result.** 1,915 gaps in 45 s → 2 gaps in 90 s.
+
+## Bug 2 — 59% of Coinbase trades silently discarded
+
+**Symptom.** Found only because bug 1's fix made the numbers legible: Coinbase
+received 1,575 trades and published 641. The missing 934 were counted as
+"duplicates suppressed."
+
+**Cause.** A Coinbase frame can carry several trades, and the decoder stamped
+the *envelope's* sequence number on every one. The gap detector saw the same
+sequence repeatedly and did exactly what it was built to do: dropped them as
+retransmits.
+
+**Why this is the worst of the three.** It presented as a feature working
+correctly. The duplicate counter went up, which is what that counter is *for*.
+No error, no gap, no alert — real market data deleted, filed under a metric
+that means "working as intended."
+
+**Fix.** The sequence belongs to the frame: the first event carries it, the
+rest are marked unsequenced. Trade identity comes from `trade_id`, which was
+always unique.
+
+## Bug 3 — the process exited on the first Kafka write failure
+
+**Symptom.** The chaos experiment killed the broker. The hypothesis was
+"producer retries rather than dropping; throughput recovers within 60 s." What
+actually happened:
+
+```
+"pipeline stopped" received:53471 published:53470
+ERROR "ingestd exited with error"
+  err="publish on tick: dial tcp [::1]:9092: connection refused"
+```
+
+The service died. A 30-second broker restart became a permanent outage.
+
+**Cause.** `flush()` returned its error, `Run` propagated it, `main` exited.
+Written that way deliberately — the reasoning at the time was that a silent
+publish failure is data loss, so failing loudly is correct. That reasoning was
+right about the failure mode and wrong about the response.
+
+**Fix.** A publish failure retains the batch and retries on the next tick.
+Retention is bounded by `MaxPendingEvents`; past it the oldest are dropped and
+counted in `events_dropped_total`, because an OOM kill loses everything
+silently whereas a counted drop is alertable.
+
+**Result, re-run:** process survived, 20 s to resume publishing after restart,
+**zero events dropped**.
+
+## What this says
+
+**Unit tests cannot find integration bugs, and 168 passing tests bought false
+confidence.** Every one of these lived in the seam between a component and
+reality — a venue's actual sequencing semantics, a frame carrying more than one
+event, a broker that goes away.
+
+**Two of the three were silent.** Bugs 1 and 2 produced no error and no alert.
+Bug 2 actively reported itself as correct behaviour. The chaos experiment
+caught bug 3 only because it stated a hypothesis first and then checked it,
+rather than observing the run and describing what happened.
+
+**The claim was false before it was tested.** "Zero data loss under broker
+failure" was in the design documents before any broker had ever been killed.
+It is true now. It was not true when written, and nothing except running it
+would have revealed that.

@@ -50,6 +50,25 @@ type Pipeline struct {
 	// Default false: publish it, and let the stream tier decide. A gap means
 	// data is missing, not that the data in hand is wrong.
 	DropOnGap bool
+
+	// MaxPendingEvents bounds how many un-published events are retained while
+	// Kafka is unreachable. Beyond it the oldest are dropped and counted, which
+	// is a visible, alertable loss rather than an out-of-memory kill.
+	MaxPendingEvents int
+
+	// ConnectionScopedVenues names venues whose sequence numbers count the
+	// connection, not the (symbol, channel) stream.
+	//
+	// Coinbase Advanced Trade is the case that forced this. It stamps one
+	// monotonic `sequence_num` on every envelope across every product and
+	// channel on the socket. Keying the detector on (venue, symbol, channel)
+	// splits that single counter across six streams, and each one then sees a
+	// number that jumps by roughly six per message — reported as a gap.
+	//
+	// This was not theoretical: the first live run against Coinbase produced
+	// 1,915 gaps and 11,161 phantom "missed" messages in 45 seconds, while
+	// Kraken and Binance produced none. Both figures were entirely artificial.
+	ConnectionScopedVenues map[string]bool
 }
 
 // Stats is a snapshot of what the pipeline has done, used by tests and by
@@ -61,6 +80,11 @@ type Stats struct {
 	Gaps       int64
 	Missed     int64
 	EncodeErrs int64
+	// PublishFailures counts flush attempts that failed. Non-zero with
+	// Dropped at zero means the outage was ridden out without loss.
+	PublishFailures int64
+	// Dropped counts events discarded because the retry buffer was full.
+	Dropped int64
 }
 
 // Run pumps events until the input channel closes or ctx is cancelled.
@@ -77,23 +101,53 @@ func (p *Pipeline) Run(ctx context.Context) (Stats, error) {
 	if p.FlushInterval <= 0 {
 		p.FlushInterval = 10 * time.Millisecond
 	}
+	if p.MaxPendingEvents <= 0 {
+		p.MaxPendingEvents = 100_000
+	}
 
 	var stats Stats
 	batch := make([]sink.Message, 0, p.BatchSize)
 	ticker := time.NewTicker(p.FlushInterval)
 	defer ticker.Stop()
 
-	flush := func() error {
+	// flush never propagates a publish failure.
+	//
+	// It used to. A single failed write returned an error from Run, which
+	// exited the process — so a broker restart that Kafka itself recovers from
+	// in seconds took the ingestion tier down permanently, and the first chaos
+	// run ended with the service dead and the claim of surviving broker
+	// failure disproved.
+	//
+	// A publish failure is transient by default: the broker comes back, and
+	// the batch is still in memory. The batch is therefore retained and
+	// retried on the next tick. What is NOT unbounded is the retention — past
+	// MaxPendingEvents the oldest are dropped and counted, because an
+	// out-of-memory kill loses everything silently whereas a counted drop is
+	// something an alert can fire on.
+	flush := func() {
 		if len(batch) == 0 {
-			return nil
+			return
 		}
-		err := p.Producer.Publish(ctx, batch...)
-		if err == nil {
-			stats.Published += int64(len(batch))
+		if err := p.Producer.Publish(ctx, batch...); err != nil {
+			stats.PublishFailures++
+			p.Log.Warn("publish failed, retaining batch for retry",
+				"buffered", len(batch), "err", err)
+
+			if len(batch) > p.MaxPendingEvents {
+				dropped := len(batch) - p.MaxPendingEvents
+				batch = append(batch[:0], batch[dropped:]...)
+				stats.Dropped += int64(dropped)
+				metrics.EventsDropped.Add(float64(dropped))
+				p.Log.Error("retry buffer full, dropped oldest events",
+					"dropped", dropped, "retained", len(batch))
+			}
+			metrics.PipelineQueueDepth.WithLabelValues("batch").Set(float64(len(batch)))
+			return
 		}
+
+		stats.Published += int64(len(batch))
 		batch = batch[:0]
 		metrics.PipelineQueueDepth.WithLabelValues("batch").Set(0)
-		return err
 	}
 
 	for {
@@ -112,8 +166,8 @@ func (p *Pipeline) Run(ctx context.Context) (Stats, error) {
 
 		case ev, ok := <-p.In:
 			if !ok {
-				err := flush()
-				return stats, err
+				flush()
+				return stats, nil
 			}
 
 			stats.Received++
@@ -135,22 +189,18 @@ func (p *Pipeline) Run(ctx context.Context) (Stats, error) {
 			metrics.PipelineQueueDepth.WithLabelValues("batch").Set(float64(len(batch)))
 
 			if len(batch) >= p.BatchSize {
-				if err := flush(); err != nil {
-					return stats, fmt.Errorf("publish batch: %w", err)
-				}
+				flush()
 			}
 
 		case <-ticker.C:
-			if err := flush(); err != nil {
-				return stats, fmt.Errorf("publish on tick: %w", err)
-			}
+			flush()
 		}
 	}
 }
 
 // checkSequence runs gap detection and reports whether to drop the event.
 func (p *Pipeline) checkSequence(ev model.Event, stats *Stats) (drop bool) {
-	key := gap.Key{Venue: ev.Venue, Symbol: ev.Symbol, Channel: channelFor(ev.Kind)}
+	key := p.sequenceKey(ev)
 	res := p.Detector.Observe(key, ev.Sequence)
 
 	switch res.Status {
@@ -256,6 +306,19 @@ func timestamps(ev model.Event) (eventTimeUS, ingestTimeUS int64) {
 		return ev.Chain.EventTimeUS, ev.Chain.IngestTimeUS
 	}
 	return 0, 0
+}
+
+// sequenceKey chooses the granularity gap detection runs at.
+//
+// The default is per (venue, symbol, channel), which is what a venue that
+// sequences each product stream independently requires. Venues listed in
+// ConnectionScopedVenues collapse to a single key, because that is the only
+// thing their counter actually describes.
+func (p *Pipeline) sequenceKey(ev model.Event) gap.Key {
+	if p.ConnectionScopedVenues[ev.Venue] {
+		return gap.Key{Venue: ev.Venue, Symbol: "", Channel: "connection"}
+	}
+	return gap.Key{Venue: ev.Venue, Symbol: ev.Symbol, Channel: channelFor(ev.Kind)}
 }
 
 func channelFor(k model.Kind) string {

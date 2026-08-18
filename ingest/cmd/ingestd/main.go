@@ -165,6 +165,8 @@ func run() error {
 		Log:           log,
 		BatchSize:     cfg.BatchSize,
 		FlushInterval: cfg.FlushInterval,
+		// Coinbase sequences the connection, not the product stream.
+		ConnectionScopedVenues: map[string]bool{venue.VenueCoinbase: true},
 		OnResync: func(v string, key gap.Key) {
 			// Forget the stream so the next snapshot re-establishes the
 			// baseline instead of gap-alerting forever.

@@ -35,20 +35,101 @@ whether the Flink cluster was local or on EKS]`
 
 ---
 
-## Verified today
+## Verified — measured 17 August 2026
 
-These are the only numbers in this repository that are actually measured, and
-they come from the test suites rather than from a running system.
+Hardware: MacBook Air, Apple silicon, 8 GB RAM, 8 CPUs. Docker allocated
+~4 GB, which is why the stack was measured in stages under
+`deploy/docker-compose.lowmem.yml` rather than all at once. Numbers below
+come from a live run against Coinbase Advanced Trade, Kraken v2 and Binance
+combined-stream, 3 symbols (BTC-USD, ETH-USD, SOL-USD), 6 Kafka topics.
 
-| Metric | Value | How |
+### Ingestion — 120 second steady-state run
+
+| Metric | Measured | Source |
 |---|---|---|
-| Go statement coverage | **76.1%** | `make cover` |
-| Go tests | **63 passing, race detector clean** | `go test -race ./...` |
-| Scala tests | **54 passing** | `mvn test` in `stream/` |
-| Java tests | **51 passing** | `mvn test` in `serving/` |
-| Stream jar size | **30 MB shaded** | `mvn package` in `stream/` |
+| Events published to Kafka | **48,036** | `tapeline_ingest_events_published_total` |
+| Events received from venues | **48,039** | `tapeline_ingest_events_received_total` |
+| Sustained throughput | **400 events/sec** | published / 120s |
+| Decode errors | **0** | `tapeline_ingest_decode_errors_total` |
+| Publish errors | **0** | `tapeline_ingest_publish_errors_total` |
+| Duplicates suppressed | **0** | `tapeline_ingest_duplicates_dropped_total` |
+| Sequence gaps | **2** | `tapeline_ingest_sequence_gaps_total` |
+| Unaccounted (received − published) | **3** | in-flight batch at scrape time, 0.006% |
+
+Per venue: Kraken 21,377 (178/s), Binance 18,216 (152/s), Coinbase 8,443 (70/s).
+
+**What 400/sec is and is not.** It is what three exchanges actually emitted for
+three symbols during the window. It is *not* a capacity measurement — the
+pipeline was never saturated, CPU was not the limit, and Kafka publish latency
+never became a bottleneck. Measuring capacity needs a synthetic generator, and
+that has not been built. Quoting this as a throughput ceiling would be wrong.
+
+### Source lag — venue event time to local receipt
+
+| Venue / kind | Mean | Samples |
+|---|---|---|
+| Kraken book | **29.0 ms** | 21,082 |
+| Binance book | **50.1 ms** | 3,240 |
+| Binance trade | **53.5 ms** | 14,976 |
+| Coinbase book | **54.0 ms** | 6,364 |
+| Coinbase trade | 3,434 ms | 2,036 |
+| Kraken trade | 65,413 ms | 298 |
+
+The last two rows are **not** pipeline lag. Both venues replay recent
+historical trades in the subscribe snapshot, and those carry genuinely old
+event timestamps. With only 298 Kraken trade samples in the window, a handful
+of snapshot rows dominates the mean. The book figures — continuous streams
+with no snapshot replay — are the honest measure of transport lag.
+
+### Chaos — Kafka broker killed mid-stream
+
+| Metric | Measured |
+|---|---|
+| Broker outage duration | **31 s** |
+| Time to resume publishing after restart | **20 s** |
+| Ingestion process survived | **yes** |
+| Events dropped | **0** |
+| Duplicates introduced on recovery | **0** |
+| Unaccounted after recovery | 4 of 23,971 (0.017%, in-flight) |
+
+During the outage the fan-in buffer filled and backpressure reached the venue
+sockets, which is the designed behaviour — bounded memory rather than
+unbounded buffering.
+
+**This experiment failed on its first run.** See `POSTMORTEM.md`.
+
+### Schema registry
+
+Verified live: `GET /config` returns `{"compatibilityLevel":"FULL"}`, and all
+three schemas registered on startup (trade → id 1, book_delta → 2,
+chain_transfer → 3).
+
+### Test suites
+
+| Suite | Result |
+|---|---|
+| Go | **69 tests**, race-detector clean, **76%** statement coverage |
+| Scala | **54 tests** |
+| Java unit | **51 tests** |
+| Java integration (Testcontainers: real Kafka + Postgres) | **10 tests** |
 
 ---
+
+## Still unmeasured
+
+Stated plainly so nothing here gets quoted as if it were measured.
+
+- **Flink jobs have never run.** The stream tier compiles, its domain logic is
+  unit-tested and the shaded jar builds, but no job has been submitted, no
+  checkpoint taken, and no exactly-once transaction committed. 4 GB of Docker
+  memory does not fit Kafka plus a JobManager plus a TaskManager alongside the
+  rest.
+- **Serving tier p99 and throughput.** k6 has not been run; the serving tier
+  has not been started against the live stack.
+- **Backfill correctness.** The comparison query in `BACKFILL.md` is unrun.
+- **Monolith vs per-topic comparison.** Both jobs exist; neither has been run,
+  so the checkpoint-duration claim remains unquantified.
+- **Terraform has never been applied** to a live AWS account.
 
 ## Ingestion
 

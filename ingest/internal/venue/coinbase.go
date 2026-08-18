@@ -124,6 +124,26 @@ func (c *Coinbase) decodeTrades(env coinbaseEnvelope, now time.Time) ([]model.Ev
 
 	ingest := now.UnixMicro()
 	out := make([]model.Event, 0, 8)
+
+	// The sequence number belongs to the *envelope*, not to each trade inside
+	// it. A frame carrying five trades stamps all five with the same value, so
+	// attaching it to every one makes four of them look like duplicates and
+	// the pipeline drops them.
+	//
+	// That is not hypothetical: a live run published 641 of 1,575 Coinbase
+	// trades — 59% real data loss — with the loss counted as "duplicates
+	// suppressed", which is exactly the shape of bug that never trips an
+	// alert. The first event of a frame carries the sequence and the rest are
+	// marked unsequenced; frame-to-frame continuity is still checked, and
+	// trade identity is carried by trade_id.
+	seqFor := func(first bool) int64 {
+		if first {
+			return env.SequenceNum
+		}
+		return model.NoSequence
+	}
+	firstOfFrame := true
+
 	for _, ev := range events {
 		for _, t := range ev.Trades {
 			sym := canonicalPair(t.ProductID)
@@ -135,11 +155,14 @@ func (c *Coinbase) decodeTrades(env coinbaseEnvelope, now time.Time) ([]model.Ev
 			if err != nil {
 				return nil, fmt.Errorf("coinbase trade size %q: %w", t.Size, err)
 			}
+			seq := seqFor(firstOfFrame)
+			firstOfFrame = false
+
 			out = append(out, model.Event{
 				Kind:     model.KindTrade,
 				Venue:    VenueCoinbase,
 				Symbol:   sym,
-				Sequence: env.SequenceNum,
+				Sequence: seq,
 				Trade: &model.Trade{
 					Venue:        VenueCoinbase,
 					Symbol:       sym,
@@ -149,7 +172,7 @@ func (c *Coinbase) decodeTrades(env coinbaseEnvelope, now time.Time) ([]model.Ev
 					Side:         model.NormalizeSide(t.Side),
 					EventTimeUS:  parseRFC3339Micros(t.Time, now),
 					IngestTimeUS: ingest,
-					Sequence:     env.SequenceNum,
+					Sequence:     seq,
 				},
 			})
 		}
@@ -165,18 +188,28 @@ func (c *Coinbase) decodeL2(env coinbaseEnvelope, now time.Time) ([]model.Event,
 
 	ingest := now.UnixMicro()
 	out := make([]model.Event, 0, len(events))
+	firstOfFrame := true
+
 	for _, ev := range events {
 		if len(ev.Updates) == 0 {
 			continue
 		}
 		sym := canonicalPair(ev.ProductID)
+
+		// Same envelope-versus-event distinction as decodeTrades.
+		seq := env.SequenceNum
+		if !firstOfFrame {
+			seq = model.NoSequence
+		}
+		firstOfFrame = false
+
 		delta := &model.BookDelta{
 			Venue:        VenueCoinbase,
 			Symbol:       sym,
 			IsSnapshot:   ev.Type == "snapshot",
 			EventTimeUS:  parseRFC3339Micros(ev.Updates[0].EventTime, now),
 			IngestTimeUS: ingest,
-			Sequence:     env.SequenceNum,
+			Sequence:     seq,
 		}
 		for _, u := range ev.Updates {
 			lvl := model.Level{Price: mustFloat(u.PriceLevel), Size: mustFloat(u.NewQuantity)}
@@ -191,7 +224,7 @@ func (c *Coinbase) decodeL2(env coinbaseEnvelope, now time.Time) ([]model.Event,
 			Kind:     model.KindBookDelta,
 			Venue:    VenueCoinbase,
 			Symbol:   sym,
-			Sequence: env.SequenceNum,
+			Sequence: seq,
 			Book:     delta,
 		})
 	}
