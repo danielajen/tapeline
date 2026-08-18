@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tapeline
+  labels:
+    name: tapeline
+---
+# The service account Flink pods run as. The IRSA annotation is what lets a
+# pod reach the lakehouse bucket without the node's instance profile granting
+# that access to every other pod on the node.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: flink
+  namespace: tapeline
+  annotations:
+    # terraform output flink_role_arn
+    eks.amazonaws.com/role-arn: "arn:aws:iam::000000000000:role/tapeline-dev-flink-lakehouse"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tapeline-config
+  namespace: tapeline
+data:
+  # Shared by every tier, so a topic name can only be wrong in one place.
+  TAPELINE_KAFKA_BROKERS: "b-1.tapeline-dev.kafka.us-east-1.amazonaws.com:9092"
+  TAPELINE_SCHEMA_REGISTRY_URL: "http://schema-registry.tapeline.svc.cluster.local:8081"
+  TAPELINE_SYMBOLS: "BTC-USD,ETH-USD,SOL-USD"
+  TAPELINE_VENUES: "coinbase,kraken,binance"
+  TAPELINE_TOPIC_TRADES: "md.trades.v1"
+  TAPELINE_TOPIC_BOOK: "md.book.v1"
+  TAPELINE_TOPIC_CHAIN: "md.chain.v1"
+  TAPELINE_TOPIC_QUOTES: "md.quotes.v1"
+  TAPELINE_TOPIC_BARS: "md.bars.v1"
+  TAPELINE_TOPIC_DIVERGENCE: "md.divergence.v1"
+  TAPELINE_ICEBERG_WAREHOUSE: "s3://tapeline-lakehouse-CHANGE-ME/warehouse"

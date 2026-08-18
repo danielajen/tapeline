@@ -1,0 +1,20 @@
+{
+  "type": "record",
+  "name": "ChainTransfer",
+  "namespace": "io.tapeline.md",
+  "doc": "A decoded ERC-20 Transfer log from an EVM chain.",
+  "fields": [
+    { "name": "chain", "type": "string", "doc": "ethereum | base" },
+    { "name": "token", "type": "string", "doc": "Contract address, lowercase hex" },
+    { "name": "symbol", "type": "string", "doc": "Resolved token symbol, or the contract address when unknown" },
+    { "name": "from_addr", "type": "string" },
+    { "name": "to_addr", "type": "string" },
+    { "name": "amount_raw", "type": "string", "doc": "uint256 as a decimal string; do not parse into a double" },
+    { "name": "decimals", "type": "int" },
+    { "name": "block_number", "type": "long" },
+    { "name": "log_index", "type": "int" },
+    { "name": "tx_hash", "type": "string" },
+    { "name": "event_time_us", "type": "long" },
+    { "name": "ingest_time_us", "type": "long" }
+  ]
+}

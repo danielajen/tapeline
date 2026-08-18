@@ -1,0 +1,104 @@
+syntax = "proto3";
+
+package tapeline.v1;
+
+option java_multiple_files = true;
+option java_package = "io.tapeline.proto.v1";
+option java_outer_classname = "MarketDataProto";
+
+// MarketData is the client-facing serving API.
+//
+// Wire-format note: Protobuf is used here, at the RPC boundary only. Kafka
+// topics carry Avro with a Confluent Schema Registry id, matching the
+// "Avro for data in motion" convention. See docs/DESIGN_DECISIONS.md#d1.
+service MarketData {
+  // Server-streaming live top-of-book. The stream opens with one snapshot
+  // per requested symbol, then pushes on change, coalesced to max_updates_hz.
+  rpc StreamQuotes(StreamQuotesRequest) returns (stream Quote);
+
+  // Unary read of the most recent quote. Served from the Redis hot path.
+  rpc GetQuote(GetQuoteRequest) returns (Quote);
+
+  // Server-streaming cross-exchange divergence alerts.
+  rpc StreamDivergence(StreamDivergenceRequest) returns (stream DivergenceEvent);
+
+  // Historical windowed bars. Served from the real-time OLAP store for
+  // recent ranges and from Iceberg for anything older than the OLAP retention.
+  rpc QueryWindows(QueryWindowsRequest) returns (QueryWindowsResponse);
+}
+
+message StreamQuotesRequest {
+  repeated string symbols = 1;
+  repeated string venues = 2;      // empty means all venues
+  uint32 max_updates_hz = 3;       // 0 means server default (10)
+}
+
+message GetQuoteRequest {
+  string symbol = 1;
+  string venue = 2;
+}
+
+message Quote {
+  string venue = 1;
+  string symbol = 2;
+  double bid_price = 3;
+  double bid_size = 4;
+  double ask_price = 5;
+  double ask_size = 6;
+  double mid = 7;
+  double spread_bps = 8;
+  double vwap_1m = 9;
+  double imbalance = 10;           // (bidQty - askQty) / (bidQty + askQty), top N levels
+  int64 event_time_us = 11;
+  int64 emit_time_us = 12;
+}
+
+message StreamDivergenceRequest {
+  repeated string symbols = 1;
+  double min_divergence_bps = 2;   // suppress alerts below this threshold
+  double min_zscore = 3;           // suppress alerts below this rolling z-score
+}
+
+message DivergenceEvent {
+  string symbol = 1;
+  string venue_a = 2;
+  string venue_b = 3;
+  double price_a = 4;
+  double price_b = 5;
+  double divergence_bps = 6;
+  double zscore = 7;               // vs the rolling baseline for this venue pair
+  int64 window_start_us = 8;
+  int64 event_time_us = 9;
+}
+
+message QueryWindowsRequest {
+  string symbol = 1;
+  string venue = 2;
+  int64 start_us = 3;
+  int64 end_us = 4;
+  uint32 window_seconds = 5;       // 1, 10, or 60
+  uint32 limit = 6;
+}
+
+message WindowBar {
+  string venue = 1;
+  string symbol = 2;
+  int64 window_start_us = 3;
+  int64 window_end_us = 4;
+  double open = 5;
+  double high = 6;
+  double low = 7;
+  double close = 8;
+  double volume = 9;
+  double vwap = 10;
+  double mean_spread_bps = 11;
+  double mean_imbalance = 12;
+  int64 trade_count = 13;
+}
+
+message QueryWindowsResponse {
+  repeated WindowBar bars = 1;
+  // Which tier answered: "olap" (Pinot/ClickHouse) or "lakehouse" (Iceberg).
+  string served_from = 2;
+  int64 query_latency_us = 3;
+}

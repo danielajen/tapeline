@@ -1,0 +1,29 @@
+{
+  "type": "record",
+  "name": "Trade",
+  "namespace": "io.tapeline.md",
+  "doc": "A single executed trade, normalized across venues. v2 adds maker_order_id and liquidity. Both new fields carry defaults, so this is a FULL-compatible evolution of v1: v1 readers ignore the new fields, v2 readers fill defaults when reading v1 payloads. See docs/SCHEMA_EVOLUTION.md.",
+  "fields": [
+    { "name": "venue", "type": "string" },
+    { "name": "symbol", "type": "string" },
+    { "name": "trade_id", "type": "string" },
+    { "name": "price", "type": "double" },
+    { "name": "size", "type": "double" },
+    { "name": "side", "type": "string" },
+    { "name": "event_time_us", "type": "long" },
+    { "name": "ingest_time_us", "type": "long" },
+    { "name": "sequence", "type": "long" },
+    {
+      "name": "maker_order_id",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Resting order id when the venue publishes it. Added in v2."
+    },
+    {
+      "name": "liquidity",
+      "type": "string",
+      "default": "UNKNOWN",
+      "doc": "MAKER | TAKER | UNKNOWN. Added in v2."
+    }
+  ]
+}

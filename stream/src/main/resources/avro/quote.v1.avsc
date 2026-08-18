@@ -1,0 +1,19 @@
+{
+  "type": "record",
+  "name": "Quote",
+  "namespace": "io.tapeline.md",
+  "doc": "Top of book plus derived microstructure statistics, emitted by the book job.",
+  "fields": [
+    { "name": "venue", "type": "string" },
+    { "name": "symbol", "type": "string" },
+    { "name": "bid_price", "type": "double" },
+    { "name": "bid_size", "type": "double" },
+    { "name": "ask_price", "type": "double" },
+    { "name": "ask_size", "type": "double" },
+    { "name": "mid", "type": "double" },
+    { "name": "spread_bps", "type": "double" },
+    { "name": "imbalance", "type": "double", "doc": "(bidQty - askQty) / (bidQty + askQty) over the top levels" },
+    { "name": "event_time_us", "type": "long" },
+    { "name": "emit_time_us", "type": "long" }
+  ]
+}

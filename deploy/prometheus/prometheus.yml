@@ -1,0 +1,49 @@
+global:
+  # 15s, not the 1m default. The numbers this project reports — p99 latency
+  # under load, recovery time after a killed broker — happen on a timescale
+  # where a one-minute scrape would miss the event entirely.
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: tapeline-local
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  - job_name: ingestd
+    static_configs:
+      - targets: ["ingestd:9101"]
+        labels:
+          tier: ingestion
+
+  - job_name: serving
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["serving:8080"]
+        labels:
+          tier: serving
+
+  - job_name: flink-jobmanager
+    static_configs:
+      - targets: ["jobmanager:9249"]
+        labels:
+          tier: stream
+          role: jobmanager
+
+  - job_name: flink-taskmanager
+    # Compose scales taskmanagers, so they are discovered by DNS rather than
+    # listed — a static list would silently miss every replica but the first.
+    dns_sd_configs:
+      - names: ["tasks.taskmanager", "taskmanager"]
+        type: A
+        port: 9249
+    relabel_configs:
+      - target_label: tier
+        replacement: stream
+      - target_label: role
+        replacement: taskmanager
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

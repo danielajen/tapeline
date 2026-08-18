@@ -1,0 +1,17 @@
+{
+  "type": "record",
+  "name": "Trade",
+  "namespace": "io.tapeline.md",
+  "doc": "A single executed trade, normalized across venues. v1.",
+  "fields": [
+    { "name": "venue", "type": "string", "doc": "coinbase | kraken | binance" },
+    { "name": "symbol", "type": "string", "doc": "Canonical pair, e.g. BTC-USD" },
+    { "name": "trade_id", "type": "string", "doc": "Venue-assigned trade identifier, stringified" },
+    { "name": "price", "type": "double" },
+    { "name": "size", "type": "double" },
+    { "name": "side", "type": "string", "doc": "BUY | SELL | UNKNOWN (aggressor side)" },
+    { "name": "event_time_us", "type": "long", "doc": "Venue event timestamp, epoch microseconds" },
+    { "name": "ingest_time_us", "type": "long", "doc": "Local receipt timestamp, epoch microseconds" },
+    { "name": "sequence", "type": "long", "doc": "Venue sequence number, -1 when the venue does not supply one" }
+  ]
+}

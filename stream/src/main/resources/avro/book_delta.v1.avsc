@@ -1,0 +1,29 @@
+{
+  "type": "record",
+  "name": "BookDelta",
+  "namespace": "io.tapeline.md",
+  "doc": "An L2 order book update. is_snapshot=true means the levels replace the book rather than patch it.",
+  "fields": [
+    { "name": "venue", "type": "string" },
+    { "name": "symbol", "type": "string" },
+    { "name": "is_snapshot", "type": "boolean" },
+    {
+      "name": "bids",
+      "type": {
+        "type": "array",
+        "items": {
+          "type": "record",
+          "name": "Level",
+          "fields": [
+            { "name": "price", "type": "double" },
+            { "name": "size", "type": "double", "doc": "0 removes the level" }
+          ]
+        }
+      }
+    },
+    { "name": "asks", "type": { "type": "array", "items": "Level" } },
+    { "name": "event_time_us", "type": "long" },
+    { "name": "ingest_time_us", "type": "long" },
+    { "name": "sequence", "type": "long" }
+  ]
+}

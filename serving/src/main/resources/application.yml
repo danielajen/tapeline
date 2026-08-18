@@ -1,0 +1,75 @@
+spring:
+  application:
+    name: tapeline-serving
+
+  datasource:
+    url: ${TAPELINE_POSTGRES_URL:jdbc:postgresql://localhost:5432/tapeline}
+    username: ${TAPELINE_POSTGRES_USER:tapeline}
+    password: ${TAPELINE_POSTGRES_PASSWORD:tapeline}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      # Small on purpose. This pool serves authentication lookups, which are
+      # cached and fast; a large pool here just moves a queue from the app
+      # into Postgres, where it is harder to see.
+      maximum-pool-size: 10
+      connection-timeout: 3000
+
+  data:
+    redis:
+      host: ${TAPELINE_REDIS_HOST:localhost}
+      port: ${TAPELINE_REDIS_PORT:6379}
+      timeout: 500ms
+      lettuce:
+        pool:
+          max-active: 32
+          max-idle: 16
+
+  kafka:
+    bootstrap-servers: ${TAPELINE_KAFKA_BROKERS:localhost:9092}
+
+server:
+  port: ${TAPELINE_HTTP_PORT:8080}
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      application: tapeline-serving
+
+tapeline:
+  schema-registry-url: ${TAPELINE_SCHEMA_REGISTRY_URL:http://localhost:8081}
+
+  topics:
+    quotes: ${TAPELINE_TOPIC_QUOTES:md.quotes.v1}
+    divergence: ${TAPELINE_TOPIC_DIVERGENCE:md.divergence.v1}
+    bars: ${TAPELINE_TOPIC_BARS:md.bars.v1}
+
+  kafka:
+    group-id: ${TAPELINE_SERVING_GROUP_ID:tapeline.serving}
+    concurrency: 3
+    max-poll-records: 500
+
+  grpc:
+    port: ${TAPELINE_GRPC_PORT:9090}
+    # Off in production: it publishes the whole API surface.
+    reflection-enabled: ${TAPELINE_GRPC_REFLECTION:false}
+    # Long enough for streaming subscribers to close cleanly on a deploy.
+    shutdown-grace-seconds: 20
+
+  olap:
+    retention-days: ${TAPELINE_OLAP_RETENTION_DAYS:7}
+    query-timeout-seconds: 5
+    datasource:
+      url: ${TAPELINE_OLAP_URL:jdbc:clickhouse://localhost:8123/tapeline}
+      username: ${TAPELINE_OLAP_USER:default}
+      password: ${TAPELINE_OLAP_PASSWORD:}
+      hikari:
+        maximum-pool-size: 8

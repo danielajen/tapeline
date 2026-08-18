@@ -1,0 +1,264 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.24"
+  JAVA_VERSION: "21"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # The schemas under ingest/schemas/avro are the single source of truth for
+  # the wire format. The stream and serving tiers hold byte-identical copies
+  # so each module builds independently without a cross-language build
+  # dependency. This job is the price of that decision: a copy that drifts
+  # fails the build here rather than failing a consumer in production.
+  # ---------------------------------------------------------------------------
+  schema-drift:
+    name: Avro schemas are in sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compare the ingestion schemas against their copies
+        run: |
+          set -euo pipefail
+          status=0
+          for schema in trade.v1 book_delta.v1 chain_transfer.v1; do
+            source="ingest/schemas/avro/${schema}.avsc"
+            copy="stream/src/main/resources/avro/${schema}.avsc"
+            if ! diff -u "$source" "$copy"; then
+              echo "::error file=${copy}::${copy} has drifted from ${source}"
+              status=1
+            fi
+          done
+          for schema in quote.v1 window_bar.v1 divergence.v1; do
+            source="stream/src/main/resources/avro/${schema}.avsc"
+            copy="serving/src/main/resources/avro/${schema}.avsc"
+            if ! diff -u "$source" "$copy"; then
+              echo "::error file=${copy}::${copy} has drifted from ${source}"
+              status=1
+            fi
+          done
+          exit $status
+
+      - name: Every schema is valid Avro
+        run: |
+          python3 - <<'PY'
+          import json, pathlib, sys
+
+          failed = False
+          for path in sorted(pathlib.Path(".").rglob("*.avsc")):
+              try:
+                  schema = json.loads(path.read_text())
+              except json.JSONDecodeError as e:
+                  print(f"::error file={path}::not valid JSON: {e}")
+                  failed = True
+                  continue
+              if schema.get("type") != "record" or "name" not in schema:
+                  print(f"::error file={path}::not a named Avro record")
+                  failed = True
+              # Every field this project writes must be documented or obvious;
+              # what is enforced here is that fields exist and are named.
+              for field in schema.get("fields", []):
+                  if "name" not in field or "type" not in field:
+                      print(f"::error file={path}::malformed field {field}")
+                      failed = True
+          sys.exit(1 if failed else 0)
+          PY
+
+  # ---------------------------------------------------------------------------
+  ingestion:
+    name: Go ingestion tier
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ingest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: ingest/go.sum
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::these files are not gofmt'd:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      # -race, always. The ingestion tier runs one goroutine per venue writing
+      # into a shared fan-in channel and a shared gap detector; a data race
+      # there produces corrupted market data rather than a crash, which is
+      # far worse and far harder to notice.
+      - name: Test with the race detector
+        run: go test -race -count=1 ./...
+
+      - name: Coverage
+        run: |
+          go test -coverprofile=coverage.out -coverpkg=./internal/...,./schemas/... ./... >/dev/null
+          total=$(go tool cover -func=coverage.out | awk '/^total:/ {gsub("%","",$3); print $3}')
+          echo "total coverage: ${total}%"
+          echo "### Go coverage: ${total}%" >> "$GITHUB_STEP_SUMMARY"
+          # A floor, not a target. Its job is to catch a pull request that
+          # removes tests, not to encourage tests written to move a number.
+          if (( $(echo "${total} < 70" | bc -l) )); then
+            echo "::error::coverage ${total}% is below the 70% floor"
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: go-coverage
+          path: ingest/coverage.out
+
+  # ---------------------------------------------------------------------------
+  stream:
+    name: Scala stream tier
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: stream
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      - name: Test
+        run: mvn -B test
+
+      - name: Package
+        run: mvn -B package -DskipTests
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tapeline-stream-jar
+          path: stream/target/tapeline-stream-*.jar
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  serving:
+    name: Java serving tier
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: serving
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      - name: Test
+        run: mvn -B test
+
+      - name: Package
+        run: mvn -B package -DskipTests
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tapeline-serving-jar
+          path: serving/target/tapeline-serving-*.jar
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  infra:
+    name: Infrastructure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: terraform fmt
+        run: terraform fmt -check -recursive -diff deploy/terraform
+
+      - name: terraform validate
+        working-directory: deploy/terraform
+        run: |
+          # No backend: validate is a syntax and type check, and initialising
+          # the S3 backend would need credentials this job has no reason to
+          # hold.
+          terraform init -backend=false
+          terraform validate
+
+      - name: Validate Kubernetes manifests
+        run: |
+          curl -sSLo /tmp/kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          tar -xzf /tmp/kubeconform.tar.gz -C /tmp
+          /tmp/kubeconform -strict -summary -kubernetes-version 1.31.0 deploy/k8s/
+
+      - name: Validate the compose file
+        run: docker compose -f deploy/docker-compose.yml config -q
+
+      - name: Validate Prometheus rules
+        run: |
+          docker run --rm -v "$PWD/deploy/prometheus:/etc/prometheus" \
+            --entrypoint promtool prom/prometheus:v2.55.1 \
+            check rules /etc/prometheus/alerts.yml
+
+      - name: Shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck chaos/*.sh scripts/*.sh
+
+  # ---------------------------------------------------------------------------
+  images:
+    name: Container images
+    runs-on: ubuntu-latest
+    needs: [ingestion, serving]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Build only, no push, on pull requests. Pushing from an untrusted
+      # branch is how a registry ends up hosting somebody else's image.
+      - name: Build the ingestion image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./ingest
+          push: false
+          tags: tapeline-ingestd:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build the serving image
+        uses: docker/build-push-action@v6
+        with:
+          # Repository root: the serving module compiles its gRPC stubs from
+          # proto/, which sits outside its own directory.
+          context: .
+          file: ./serving/Dockerfile
+          push: false
+          tags: tapeline-serving:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

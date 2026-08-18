@@ -1,0 +1,34 @@
+# Build output
+ingest/bin/
+ingest/coverage.*
+stream/target/
+serving/target/
+**/.classpath
+**/.project
+**/.settings/
+
+# Test and load-test artifacts
+loadtest/results/*.json
+chaos/results/*.md
+
+# Terraform
+deploy/terraform/.terraform/
+deploy/terraform/*.tfstate
+deploy/terraform/*.tfstate.*
+deploy/terraform/*.tfplan
+deploy/terraform/.terraform.lock.hcl
+# env/*.tfvars is committed: it contains shapes and sizes, not secrets.
+# Anything that does hold a secret goes in a file matched below.
+**/*.auto.tfvars
+**/secrets.tfvars
+
+# Local overrides and secrets
+.env
+.env.local
+**/application-local.yml
+
+# Editors and OS
+.idea/
+.vscode/
+*.iml
+.DS_Store

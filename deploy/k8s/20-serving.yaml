@@ -1,0 +1,160 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: serving
+  namespace: tapeline
+  labels: { app: serving, tier: serving }
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      # Zero unavailable: streaming subscribers are pinned to the replica
+      # they connected to, so every replica taken down drops its
+      # subscriptions. Surging first means clients reconnect onto a warm
+      # replica instead of waiting for one to start.
+      maxUnavailable: 0
+  selector:
+    matchLabels: { app: serving }
+  template:
+    metadata:
+      labels: { app: serving, tier: serving }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/actuator/prometheus"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile: { type: RuntimeDefault }
+      # Spread replicas across zones. Without this the scheduler is free to
+      # place all three on one node, and the three-AZ layout underneath buys
+      # nothing.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: { app: serving }
+      containers:
+        - name: serving
+          image: ghcr.io/OWNER/tapeline-serving:latest
+          envFrom:
+            - configMapRef: { name: tapeline-config }
+          env:
+            - name: TAPELINE_REDIS_HOST
+              value: redis.tapeline.svc.cluster.local
+            - name: TAPELINE_POSTGRES_URL
+              valueFrom:
+                secretKeyRef: { name: tapeline-secrets, key: postgres-url }
+            - name: TAPELINE_POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: tapeline-secrets, key: postgres-password }
+            - name: TAPELINE_OLAP_URL
+              value: jdbc:clickhouse://clickhouse.tapeline.svc.cluster.local:8123/tapeline
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: grpc
+              containerPort: 9090
+          resources:
+            requests: { cpu: "1", memory: "1Gi" }
+            limits: { memory: "1Gi" }
+          startupProbe:
+            # A JVM plus a Kafka consumer group join takes a while. Without a
+            # startup probe the liveness probe kills the pod mid-boot and the
+            # deployment never converges — a genuinely confusing crash loop
+            # where nothing is actually wrong.
+            httpGet: { path: /actuator/health/readiness, port: http }
+            failureThreshold: 30
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: http }
+            periodSeconds: 20
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: http }
+            periodSeconds: 10
+          lifecycle:
+            preStop:
+              # Sleep before shutting down so the endpoint is removed from
+              # the Service before the process stops accepting connections.
+              # Endpoint propagation is asynchronous; without this pause a
+              # rolling deploy sends requests to a pod that is already
+              # closing, which shows up to clients as a burst of failures.
+              exec: { command: ["sh", "-c", "sleep 8"] }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      # Longer than the gRPC shutdown grace period in GrpcServerRunner (20s)
+      # plus the preStop sleep, or Kubernetes SIGKILLs the process mid-drain
+      # and every streaming subscriber sees a reset.
+      terminationGracePeriodSeconds: 45
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: serving
+  namespace: tapeline
+spec:
+  selector: { app: serving }
+  ports:
+    - { name: http, port: 8080, targetPort: http }
+    - { name: grpc, port: 9090, targetPort: grpc }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: serving
+  namespace: tapeline
+spec:
+  # Voluntary disruptions — node drains, cluster upgrades — may never take
+  # the serving tier below two replicas.
+  minAvailable: 2
+  selector:
+    matchLabels: { app: serving }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: serving
+  namespace: tapeline
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: serving
+  minReplicas: 3
+  maxReplicas: 12
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 65 }
+    # Scale on subscriber count as well as CPU. Idle streaming subscriptions
+    # cost memory and file descriptors long before they cost CPU, so a
+    # CPU-only autoscaler would let a replica accumulate connections until it
+    # fell over while still looking under-utilised.
+    - type: Pods
+      pods:
+        metric: { name: tapeline_serving_stream_subscribers }
+        target: { type: AverageValue, averageValue: "400" }
+  behavior:
+    scaleDown:
+      # Scale down slowly. Removing a replica drops its streams, so
+      # aggressive downscaling makes every traffic trough a reconnect storm.
+      stabilizationWindowSeconds: 300
+      policies:
+        - { type: Pods, value: 1, periodSeconds: 120 }
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+        - { type: Percent, value: 100, periodSeconds: 30 }

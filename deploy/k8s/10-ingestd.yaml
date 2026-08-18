@@ -1,0 +1,84 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ingestd
+  namespace: tapeline
+  labels: { app: ingestd, tier: ingestion }
+spec:
+  # Exactly one. This is the constraint that shapes the whole deployment:
+  # two replicas would both connect to every venue and publish every event
+  # twice, and Kafka would faithfully store both copies. Deduplicating
+  # downstream is possible but costs keyed state in Flink for a problem that
+  # simply not running two producers avoids entirely.
+  #
+  # The consequence is honest: ingestion is a single point of failure with a
+  # restart-shaped recovery. Leader election would fix it and is in
+  # docs/ROADMAP.md; pretending a stateless-looking Deployment is
+  # horizontally scalable would not.
+  replicas: 1
+  strategy:
+    # Recreate, not RollingUpdate. A rolling update would briefly run two
+    # producers at once, which is the exact duplication this avoids.
+    type: Recreate
+  selector:
+    matchLabels: { app: ingestd }
+  template:
+    metadata:
+      labels: { app: ingestd, tier: ingestion }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9101"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: ingestd
+          image: ghcr.io/OWNER/tapeline-ingestd:latest
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef: { name: tapeline-config }
+          env:
+            - name: TAPELINE_METRICS_ADDR
+              value: ":9101"
+            - name: TAPELINE_LOG_LEVEL
+              value: "info"
+          ports:
+            - name: metrics
+              containerPort: 9101
+          resources:
+            # Requests equal limits for memory so the pod is Guaranteed QoS
+            # and is not the first thing evicted under node pressure. CPU has
+            # no limit on purpose: throttling a WebSocket reader adds latency
+            # to every venue at once, and CPU is compressible where memory is
+            # not.
+            requests: { cpu: "500m", memory: "512Mi" }
+            limits: { memory: "512Mi" }
+          livenessProbe:
+            httpGet: { path: /healthz, port: metrics }
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          readinessProbe:
+            httpGet: { path: /healthz, port: metrics }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+      terminationGracePeriodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ingestd
+  namespace: tapeline
+  labels: { app: ingestd }
+spec:
+  selector: { app: ingestd }
+  ports:
+    - name: metrics
+      port: 9101
+      targetPort: metrics

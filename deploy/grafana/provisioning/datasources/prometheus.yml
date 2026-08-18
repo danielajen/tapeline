@@ -1,0 +1,12 @@
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      # Must match prometheus.yml. Grafana uses this to pick sane step sizes;
+      # a mismatch produces staircase artifacts on rate() panels that look
+      # like real throughput dips.
+      timeInterval: 15s

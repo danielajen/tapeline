@@ -1,0 +1,17 @@
+{
+  "type": "record",
+  "name": "DivergenceEvent",
+  "namespace": "io.tapeline.md",
+  "doc": "A cross-exchange price divergence that cleared both the absolute and the statistical threshold.",
+  "fields": [
+    { "name": "symbol", "type": "string" },
+    { "name": "venue_a", "type": "string" },
+    { "name": "venue_b", "type": "string" },
+    { "name": "price_a", "type": "double" },
+    { "name": "price_b", "type": "double" },
+    { "name": "divergence_bps", "type": "double" },
+    { "name": "zscore", "type": "double", "doc": "Against the rolling baseline for this venue pair, excluding this observation" },
+    { "name": "window_start_us", "type": "long" },
+    { "name": "event_time_us", "type": "long" }
+  ]
+}

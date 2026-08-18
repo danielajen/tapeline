@@ -1,0 +1,133 @@
+# Flink cluster configuration.
+#
+# One Deployment per job, not one cluster running all of them — the whole
+# point of the per-topic split is that the jobs tune, scale and fail
+# independently, and a shared session cluster would take that back.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: flink-config
+  namespace: tapeline
+data:
+  flink-conf.yaml: |
+    jobmanager.rpc.address: flink-jobmanager
+    jobmanager.memory.process.size: 1600m
+    taskmanager.memory.process.size: 3g
+    taskmanager.numberOfTaskSlots: 4
+
+    # RocksDB, not the heap-based backend. Order book state is unbounded in
+    # principle and bounded only by the trim depth in practice; a heap
+    # backend puts all of it under GC pressure, and the symptom is
+    # checkpoint pauses that look like network problems.
+    state.backend.type: rocksdb
+    state.backend.incremental: true
+    state.checkpoints.dir: s3://tapeline-lakehouse-CHANGE-ME/checkpoints
+    state.savepoints.dir: s3://tapeline-lakehouse-CHANGE-ME/savepoints
+
+    execution.checkpointing.interval: 30s
+    execution.checkpointing.min-pause: 5s
+    execution.checkpointing.timeout: 2min
+    execution.checkpointing.tolerable-failed-checkpoints: 3
+    # Retain checkpoints when a job is cancelled, so a bad deploy can be
+    # rolled back to a known state instead of restarting from nothing.
+    execution.checkpointing.externalized-checkpoint-retention: RETAIN_ON_CANCELLATION
+
+    restart-strategy.type: exponential-delay
+    restart-strategy.exponential-delay.initial-backoff: 10s
+    restart-strategy.exponential-delay.max-backoff: 2min
+
+    metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporterFactory
+    metrics.reporter.prom.port: 9249
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flink-jobmanager
+  namespace: tapeline
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: flink, component: jobmanager }
+  template:
+    metadata:
+      labels: { app: flink, component: jobmanager, tier: stream }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9249"
+    spec:
+      serviceAccountName: flink
+      containers:
+        - name: jobmanager
+          image: ghcr.io/OWNER/tapeline-stream:latest
+          args: ["jobmanager"]
+          envFrom:
+            - configMapRef: { name: tapeline-config }
+          ports:
+            - { name: rpc, containerPort: 6123 }
+            - { name: blob, containerPort: 6124 }
+            - { name: ui, containerPort: 8081 }
+            - { name: metrics, containerPort: 9249 }
+          resources:
+            requests: { cpu: "500m", memory: "2Gi" }
+            limits: { memory: "2Gi" }
+          volumeMounts:
+            - name: config
+              mountPath: /opt/flink/conf
+      volumes:
+        - name: config
+          configMap: { name: flink-config }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flink-taskmanager
+  namespace: tapeline
+spec:
+  replicas: 3
+  selector:
+    matchLabels: { app: flink, component: taskmanager }
+  template:
+    metadata:
+      labels: { app: flink, component: taskmanager, tier: stream }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9249"
+    spec:
+      serviceAccountName: flink
+      containers:
+        - name: taskmanager
+          image: ghcr.io/OWNER/tapeline-stream:latest
+          args: ["taskmanager"]
+          envFrom:
+            - configMapRef: { name: tapeline-config }
+          ports:
+            - { name: metrics, containerPort: 9249 }
+          resources:
+            requests: { cpu: "1", memory: "4Gi" }
+            limits: { memory: "4Gi" }
+          volumeMounts:
+            - name: config
+              mountPath: /opt/flink/conf
+            - name: rocksdb
+              mountPath: /rocksdb
+      volumes:
+        - name: config
+          configMap: { name: flink-config }
+        - name: rocksdb
+          # Local scratch for RocksDB. Checkpoints go to S3, so losing this
+          # on a restart costs a state restore rather than the state itself.
+          emptyDir: {}
+      terminationGracePeriodSeconds: 60
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: flink-jobmanager
+  namespace: tapeline
+spec:
+  selector: { app: flink, component: jobmanager }
+  ports:
+    - { name: rpc, port: 6123 }
+    - { name: blob, port: 6124 }
+    - { name: ui, port: 8081 }
+    - { name: metrics, port: 9249 }

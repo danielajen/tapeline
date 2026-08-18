@@ -1,0 +1,179 @@
+# Alerts.
+#
+# Each rule here answers a specific question about whether the data is
+# trustworthy, not merely whether processes are running. A pipeline that is
+# up and silently serving stale or incomplete data is the failure mode that
+# actually costs something, and none of the usual process-liveness alerts
+# catch it.
+#
+# Every alert carries a runbook line in its annotations. An alert nobody
+# knows how to act on is a page that gets muted.
+
+groups:
+  - name: ingestion
+    rules:
+      - alert: VenueDisconnected
+        expr: tapeline_ingest_connection_up == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.venue }} has been disconnected for 2 minutes"
+          description: >-
+            The reconnect loop backs off to 30s, so a genuinely transient blip
+            clears well inside this window. Two minutes means the venue is
+            rejecting us, the credentials or URL changed, or egress is broken.
+          runbook: >-
+            Check ingestd logs for the dial error. If every venue is down at
+            once it is the network, not the exchanges.
+
+      - alert: NoEventsIngested
+        expr: sum(rate(tapeline_ingest_events_received_total[5m])) == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No market data has been ingested for 5 minutes"
+          description: >-
+            Crypto markets do not close, so zero events is never a market
+            condition. The socket is open and delivering nothing, or every
+            frame is failing to decode.
+          runbook: "Check decode_errors_total first; a venue schema change is the usual cause."
+
+      - alert: DecodeErrorsSustained
+        expr: sum(rate(tapeline_ingest_decode_errors_total[5m])) by (venue) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.venue }} frames are failing to decode"
+          description: >-
+            A sustained decode error rate almost always means the venue
+            changed its message format. Single errors are normal and are not
+            alerted on.
+          runbook: >-
+            Capture a frame, add it to the venue's decode_test.go as a failing
+            case, then fix the decoder. The test is the regression guard.
+
+      - alert: SequenceGapsElevated
+        expr: sum(rate(tapeline_ingest_sequence_messages_missed_total[5m])) by (venue) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.venue }} is dropping messages"
+          description: >-
+            Missed messages mean the local order book is reconstructed from
+            incomplete deltas. Downstream quotes may be wrong, not merely late.
+          runbook: "Correlate with reconnects_total; a lossy network shows as both."
+
+      - alert: IngestionLagHigh
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(tapeline_ingest_source_lag_seconds_bucket[5m])) by (le, venue)
+          ) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.venue }} p99 source lag is above 2 seconds"
+          description: >-
+            Venue event time to local receipt. This is the honest measure of
+            data staleness and the panel to watch during chaos testing.
+          runbook: "If publish_latency is also high the bottleneck is Kafka, not the venue."
+
+      - alert: KafkaPublishFailing
+        expr: sum(rate(tapeline_ingest_publish_errors_total[5m])) > 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Kafka writes are failing"
+          description: "Data is being lost at the ingestion boundary."
+          runbook: "Check broker health and min.insync.replicas against the current ISR count."
+
+  - name: stream
+    rules:
+      - alert: CheckpointsFailing
+        expr: increase(flink_jobmanager_job_numberOfFailedCheckpoints[15m]) > 2
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Flink checkpoints are failing for {{ $labels.job_name }}"
+          description: >-
+            Exactly-once output depends on checkpoints completing: the Kafka
+            sink commits its transaction only when a checkpoint does. Failing
+            checkpoints mean output has stopped being committed even though
+            the job looks healthy.
+          runbook: >-
+            Check checkpoint duration against the interval. If duration is
+            approaching the timeout, state has outgrown the current
+            parallelism. This is the alert that drove the split away from the
+            monolithic job; see docs/DESIGN_DECISIONS.md#d2.
+
+      - alert: CheckpointDurationApproachingTimeout
+        expr: |
+          flink_jobmanager_job_lastCheckpointDuration
+            > 0.7 * flink_jobmanager_job_checkpointTimeout
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Checkpoints for {{ $labels.job_name }} are taking most of their timeout"
+          description: "The leading indicator of CheckpointsFailing, with room to act."
+          runbook: "Raise parallelism or reduce retained book depth before this becomes critical."
+
+      - alert: CrossedBooksSustained
+        expr: sum(rate(flink_taskmanager_job_task_operator_tapeline_book_crossed_books[5m])) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Order books are crossing"
+          description: >-
+            Best bid at or above best ask is not a market condition — it means
+            deltas were applied out of order or a resync was missed. Quotes
+            for the affected symbols are being suppressed rather than served.
+          runbook: "Correlate with ingestion sequence gaps; the cause is almost always upstream."
+
+  - name: serving
+    rules:
+      - alert: QuoteDecodeFailures
+        expr: sum(rate(tapeline_serving_quotes_failed_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The serving tier cannot decode quotes"
+          description: >-
+            Usually a schema change the serving tier has not been redeployed
+            for. Avro resolution handles added fields; it does not handle a
+            field being removed or retyped.
+          runbook: "Check the schema id in the log line against the registry."
+
+      - alert: SlowClientDropsHigh
+        expr: sum(rate(tapeline_serving_stream_dropped_total[5m])) > 100
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Quote updates are being dropped for slow subscribers"
+          description: >-
+            Expected in small numbers — dropping is the designed response to
+            a subscriber that cannot keep up. A sustained high rate means
+            either a client is badly behaved or the server is over-subscribed.
+          runbook: "Identify the key id from access logs before changing any limits."
+
+      - alert: RateLimiterFailingOpen
+        expr: sum(rate(tapeline_serving_redis_errors_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis errors: the rate limiter is failing open"
+          description: >-
+            The limiter deliberately allows traffic when Redis is unavailable,
+            so quotas are currently unenforced. This alert exists precisely
+            because that failure is otherwise silent.
+          runbook: "Restore Redis. Do not change the fail-open behaviour to fix the alert."
