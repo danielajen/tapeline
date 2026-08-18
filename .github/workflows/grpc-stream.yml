@@ -73,6 +73,20 @@ jobs:
             docker exec tapeline-redis-1 redis-cli ping 2>/dev/null | grep -q PONG && break
             sleep 2
           done
+          # Both stores initialise from mounted DDL. Waiting for the schema
+          # rather than the port matters: the container answers TCP well
+          # before docker-entrypoint-initdb.d has run.
+          for i in $(seq 1 30); do
+            docker exec tapeline-postgres-1 psql -U tapeline -d tapeline \
+              -c 'SELECT 1' >/dev/null 2>&1 && break
+            sleep 2
+          done
+          for i in $(seq 1 30); do
+            curl -fsS 'http://localhost:8123/?query=SELECT%201' >/dev/null 2>&1 && break
+            sleep 2
+          done
+          echo "clickhouse tables:"
+          curl -s 'http://localhost:8123/?query=SHOW%20TABLES%20FROM%20tapeline' || true
           echo "infrastructure up"
 
       - name: Create topics

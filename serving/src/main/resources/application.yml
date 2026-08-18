@@ -81,7 +81,10 @@ tapeline:
     query-timeout-seconds: 5
     datasource:
       jdbc-url: ${TAPELINE_OLAP_URL:jdbc:clickhouse://localhost:8123/tapeline}
-      driver-class-name: ${TAPELINE_OLAP_DRIVER:org.postgresql.Driver}
+      # Must match the OLAP url above. This defaulted to the Postgres driver
+      # while the url defaulted to ClickHouse, so the context failed to
+      # start on default configuration.
+      driver-class-name: ${TAPELINE_OLAP_DRIVER:com.clickhouse.jdbc.ClickHouseDriver}
       username: ${TAPELINE_OLAP_USER:default}
       password: ${TAPELINE_OLAP_PASSWORD:}
       hikari:

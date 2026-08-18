@@ -55,6 +55,27 @@
       <artifactId>postgresql</artifactId>
       <scope>runtime</scope>
     </dependency>
+
+    <!-- ClickHouse JDBC.
+         Its absence was a real startup failure, not an oversight of taste:
+         the OLAP DataSource defaults to jdbc:clickhouse:// while the driver
+         property defaulted to org.postgresql.Driver, so every deployment on
+         defaults died with "Driver org.postgresql.Driver claims to not accept
+         jdbcUrl". Nothing caught it because no test and no CI job had ever
+         started the Spring context against the default configuration. -->
+    <dependency>
+      <groupId>com.clickhouse</groupId>
+      <artifactId>clickhouse-jdbc</artifactId>
+      <version>0.6.5</version>
+      <classifier>all</classifier>
+      <exclusions>
+        <!-- Brings its own slf4j binding, which collides with Spring Boot's. -->
+        <exclusion>
+          <groupId>org.slf4j</groupId>
+          <artifactId>slf4j-api</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
     <dependency>
       <groupId>org.springframework.kafka</groupId>
       <artifactId>spring-kafka</artifactId>
