@@ -5,13 +5,20 @@
 # a container an attacker cannot get a shell in, and CVE scanners have almost
 # nothing to report because there is almost nothing there.
 
-FROM golang:1.24-alpine AS build
+FROM golang:1.25-alpine AS build
 
 WORKDIR /src
 
 # Dependencies first, as their own layer. Source edits then rebuild in
 # seconds rather than re-downloading the module cache every time.
 COPY go.mod go.sum ./
+
+# GOTOOLCHAIN=auto lets Go fetch a newer toolchain when a dependency's go.mod
+# demands one. Pinning the base image alone is not enough: adding the
+# OpenTelemetry SDK pulled in modules that require a newer Go than the base
+# ships, and `go mod download` fails inside the build with a toolchain error
+# rather than a dependency one.
+ENV GOTOOLCHAIN=auto
 RUN go mod download
 
 COPY . .
