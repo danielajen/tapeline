@@ -16,6 +16,14 @@ scrape_configs:
       - targets: ["ingestd:9101"]
         labels:
           tier: ingestion
+      # The same tier run from the host rather than a container, which is how
+      # it runs during local development against live venues. Both targets are
+      # listed because only one of them resolves in any given setup, and a
+      # target that does not resolve is simply reported down rather than
+      # breaking the scrape.
+      - targets: ["host.docker.internal:9101"]
+        labels:
+          tier: ingestion
 
   - job_name: serving
     metrics_path: /actuator/prometheus
