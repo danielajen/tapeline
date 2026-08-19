@@ -521,3 +521,42 @@ that returns nothing, because zero is a plausible answer. Every probe in this
 repo now fails loudly instead of defaulting. And when a fix that should have
 changed a number changes nothing at all, suspect the instrument before the
 third hypothesis about the system.
+
+## Postmortem 6: three probes, three confident zeros
+
+**Impact.** Four workflow runs and one wrong hypothesis about an order book
+operator that was working correctly.
+
+**The pattern.** Three separate measurement bugs in this repository, all with
+the same shape: a probe that could not measure reported zero instead of
+reporting that it could not measure.
+
+1. `kafka.tools.GetOffsetShell`, removed in Kafka 7.7. The call failed, stdout
+   came back empty, and a fallback turned that into the integer zero. Printed
+   `quotes produced = 0` on every run regardless of the topic's contents.
+2. Summed `write-records` across vertices. The book operator is chained with a
+   Kafka committer, which emits nothing downstream, so that vertex reports
+   zero writes however many quotes it produces. `written == read` read as
+   confirmation and was arithmetic.
+3. Counted `*.parquet` under the Iceberg warehouse. The write format is a
+   table property. The lakehouse job had committed three data files and 8,953
+   records, and the workflow failed with "wrote no files".
+
+**What made it expensive.** In the first case two signals agreed, and they
+were wrong for unrelated reasons. Two real bugs were found and fixed while
+chasing it — a timer that stopped re-arming once input went quiet, and a
+generator producing crossed books — and neither changed the number, which read
+as "hypothesis eliminated" rather than "the instrument is broken".
+
+**The rule.** A probe that returns zero on failure is worse than one that
+returns nothing, because zero is a plausible answer. Every probe here now
+fails loudly. And when a fix that should have moved a number moves nothing at
+all, suspect the instrument before forming a third hypothesis about the
+system.
+
+**Still open, and recorded as such:** gRPC time-to-first-quote reports a p95
+that reproduces the hold duration to four significant figures. One hypothesis
+was tested and disproved. Rather than guess again, the threshold was removed
+and the metric is marked unmeasured — the same failure mode this postmortem is
+about would otherwise be repeated in the other direction, by asserting on a
+number whose meaning is unknown.

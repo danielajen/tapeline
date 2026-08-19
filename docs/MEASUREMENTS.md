@@ -504,3 +504,38 @@ that value would be inventing a measurement.
 
 **Not measured:** behaviour at 500 subscribers, which is what the full
 scenario runs. A shared runner at that concurrency would measure the runner.
+
+## Kappa backfill correctness
+
+Measured by `.github/workflows/backfill-proof.yml`. 8,900 trades seeded once,
+processed by the live path into `md.bars.v1` and written to Iceberg by the
+lakehouse job, then replayed out of Iceberg by `BackfillJob` into a separate
+topic. One-second windows.
+
+| | |
+|---|---|
+| Live bars | 225 |
+| Replayed bars | 279 |
+| Windows computed by both | **225** |
+| Mismatched fields | **0** |
+
+Every window both paths computed agrees on open, high, low, close, volume,
+VWAP and trade count. Float fields compare with a relative tolerance of 1e-9,
+because VWAP is a sum of products over a sum and the two paths can accumulate
+in a different order; ordering may change the last bits of a double and
+nothing else. The comparator was checked in both directions — it passes float
+noise and replay-only windows, and fails a deliberately altered volume.
+
+The 54 extra replayed bars are expected rather than a discrepancy. The live
+job runs against an unbounded source and is cancelled, so its final windows
+never close and never emit; the replay is bounded and closes all of them.
+
+This is what BACKFILL.md previously argued structurally — that the two paths
+call the same `TradesJob.aggregate`, so no second implementation exists to
+drift. The argument was sound and was not a proof: the source and the
+watermark strategy do differ, and those decide which record lands in which
+window. Now it is measured.
+
+**Scope:** the warehouse is a local Hadoop catalog, not S3. The property under
+test is that a bounded replay through the same operators reproduces the same
+aggregates; the filesystem behind the catalog is not part of that property.
