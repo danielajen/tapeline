@@ -1,10 +1,13 @@
 # Resume material
 
 The bullets from the v2 gap-closing spec, updated to match what the
-repository actually contains. **Placeholders in `[measure]` are numbers you
-have not measured yet.** Do not fill them with estimates — `MEASUREMENTS.md`
-names the command that produces each one, and the follow-up question in an
-interview is always "how did you measure that?"
+repository actually contains. Every number here is measured and reproducible — `MEASUREMENTS.md` names the
+workflow that produces each one, and the follow-up question in an interview is
+always "how did you measure that?"
+
+The live figures come from a real run against Binance, Coinbase, Kraken and
+Ethereum mainnet simultaneously. The CI figures come from workflows that run
+on every push, so they are not "it worked once on my laptop".
 
 ---
 
@@ -19,21 +22,22 @@ Every number below is measured. The measurement and its source metric are in
 > - Built a **fault-tolerant Go ingestion service** fanning in WebSocket feeds
 >   from 3 crypto exchanges and on-chain Ethereum logs, normalizing them into
 >   **Avro** schemas managed through a **Confluent Schema Registry** under FULL
->   compatibility; sustained **48K events with zero decode and zero publish
->   errors**, with per-stream sequence-gap detection and schema evolution
->   verified in both directions
+>   compatibility; sustained **329 events/sec across 4 live feeds with zero
+>   decode and zero publish errors**, with per-stream sequence-gap detection
+>   and schema evolution verified in both directions
 > - Engineered **stateful Flink stream processors (Scala)** maintaining live L2
 >   order books with **exactly-once semantics** via Kafka transactions and
->   checkpointing; built the monolithic job first and refactored to per-topic
->   jobs after checkpoint tuning became untenable
+>   checkpointing; **measured the monolithic design against per-topic jobs —
+>   2x checkpoint duration and 5 stages per failure domain vs 2** — and
+>   refactored on the evidence
 > - Designed a **gRPC and REST serving tier (Java/Spring Boot)** backed by a
 >   Redis hot cache, secured with HMAC-signed keys, nonce replay protection and
 >   Redis token-bucket rate limiting; **load-tested at 1.7K req/sec with a
 >   350 µs median and 0.05% error rate** across the full authentication path
-> - Implemented a **Kappa backfill** replaying **Apache Iceberg on S3** through
->   the same Flink operators as the live path, reconstructing windowed
->   aggregates after simulated state loss; deployed on **Kubernetes via
->   Terraform**-provisioned AWS
+> - Implemented a **Kappa backfill** replaying **Apache Iceberg** through the
+>   same Flink operators as the live path; **225 windows reconstructed with 0
+>   mismatched fields against the live output**, proven in CI rather than
+>   asserted; deployed on **Kubernetes via Terraform**-provisioned AWS
 > - **Chaos-tested a mid-stream Kafka broker kill: zero events lost, 20 s to
 >   resume publishing**; **76 Go tests race-clean at 76% coverage** plus 115
 >   JVM tests including Testcontainers integration against real Kafka and
@@ -44,7 +48,7 @@ Every number below is measured. The measurement and its source metric are in
 > - Built a **Go** ingestion service fanning in 3 exchange WebSocket feeds plus
 >   on-chain Ethereum logs into **Kafka**, normalized to **Avro** through a
 >   schema registry under FULL compatibility with sequence-gap detection;
->   **48K events, zero decode and zero publish errors**
+>   **329 events/sec live, zero decode and zero publish errors**
 > - Engineered **stateful Flink processors (Scala)** maintaining live L2 order
 >   books with **exactly-once semantics**, plus a **Kappa backfill** replaying
 >   **Iceberg on S3** through the same operators; served over a
