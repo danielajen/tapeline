@@ -62,7 +62,22 @@ def sample(addr, key_id, secret, symbols, timeout):
         hdrs += ["-H", f"{k}: {v}"]
 
     request = json.dumps({"symbols": symbols, "maxUpdatesHz": 10})
-    cmd = ["grpcurl", "-plaintext", "-d", request, *hdrs, addr, PATH.lstrip("/")]
+    # The proto files are passed explicitly so grpcurl does not use server
+    # reflection.
+    #
+    # With reflection, grpcurl makes a ServerReflectionInfo call before the
+    # real one, and -H applies the same headers to both. The nonce is
+    # therefore spent on the reflection call, and the StreamQuotes call that
+    # follows is rejected as a replay - which is the replay guard working
+    # exactly as designed, on a client that signed one nonce and made two
+    # requests. Every sample failed Unauthenticated against a server that was
+    # simultaneously serving k6 without trouble.
+    cmd = [
+        "grpcurl", "-plaintext",
+        "-import-path", "proto",
+        "-proto", "tapeline/v1/marketdata.proto",
+        "-d", request, *hdrs, addr, PATH.lstrip("/"),
+    ]
 
     started = time.monotonic()
     proc = subprocess.Popen(
