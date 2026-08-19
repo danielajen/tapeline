@@ -166,6 +166,29 @@ jobs:
 
           wait $GEN || true
 
+      # Measured outside k6 deliberately. k6 reported a first-quote p95 that
+      # reproduced the hold duration to four significant figures across two
+      # runs and did not move when the hold was sliced, so it was timing
+      # itself. Rather than keep guessing at its event loop, this opens real
+      # streams with grpcurl and times the first message off the socket.
+      - name: Measure time to first quote
+        run: |
+          curl -fsSL https://github.com/fullstorydev/grpcurl/releases/download/v1.9.1/grpcurl_1.9.1_linux_x86_64.tar.gz \
+            -o /tmp/grpcurl.tgz
+          tar -xzf /tmp/grpcurl.tgz -C /tmp
+          sudo mv /tmp/grpcurl /usr/local/bin/grpcurl
+          grpcurl -version
+
+          # Keep quotes flowing so a sample cannot succeed only on a stale
+          # snapshot left over from an earlier step.
+          /tmp/gen -kind quote -schema-id "${{ steps.schema.outputs.id }}" \
+            -rate 200 -duration 90s -topic md.quotes.v1 \
+            -schema stream/src/main/resources/avro/quote.v1.avsc &
+          GEN=$!
+          sleep 5
+          python3 scripts/first_quote_probe.py --addr localhost:9090 --samples 25
+          wait $GEN || true
+
       - name: Assert quotes actually reached subscribers
         run: |
           F=loadtest/results/grpc-stream-summary.txt
@@ -191,6 +214,7 @@ jobs:
           name: grpc-stream-results
           path: |
             loadtest/results/
+            first-quote-results.txt
             /tmp/serving.log
           if-no-files-found: ignore
 
