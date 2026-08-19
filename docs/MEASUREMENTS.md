@@ -495,12 +495,29 @@ This establishes that the fan-out path works: one Kafka consumer per replica,
 broadcast in memory to every open stream, delivering to 60 simultaneous
 subscribers without dropping one.
 
-**Time to first quote is not measured.** The harness reports a p95 that
-reproduces the hold duration to four significant figures across two runs and
-did not move when the sleep was sliced into 50 ms pieces, so it is timing the
-test rather than the server. The metric is still printed, because the number
-is evidence of something, but nothing is asserted on it. Filling this row with
-that value would be inventing a measurement.
+### Time to first quote (cold connect)
+
+Measured by `scripts/first_quote_probe.py`, 25 independent connections while
+quotes are flowing.
+
+| | |
+|---|---|
+| Samples receiving a quote | **25 / 25** |
+| p50 | **9.3 ms** |
+| p95 | **16.9 ms** |
+| max | **21.2 ms** |
+
+Each sample is a separate process and connection, so this is the cold path:
+dial, authenticate, subscribe, snapshot. It is what a client experiences on
+connect, and it is the number the snapshot-on-subscribe design exists to keep
+small. It is not a warm per-message latency and is not comparable to one.
+
+This is measured outside k6 on purpose. k6 reported a first-quote p95 that
+reproduced the 30-second hold to four significant figures on two runs and did
+not move when the hold was sliced, so it was timing itself. The value it
+reported was ~30,000 ms; the real number is 16.9 ms at p95 — three orders of
+magnitude apart, which is worth stating plainly as a warning about trusting a
+harness metric that nobody has sanity-checked.
 
 **Not measured:** behaviour at 500 subscribers, which is what the full
 scenario runs. A shared runner at that concurrency would measure the runner.

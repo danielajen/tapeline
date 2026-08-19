@@ -554,9 +554,25 @@ fails loudly. And when a fix that should have moved a number moves nothing at
 all, suspect the instrument before forming a third hypothesis about the
 system.
 
-**Still open, and recorded as such:** gRPC time-to-first-quote reports a p95
-that reproduces the hold duration to four significant figures. One hypothesis
-was tested and disproved. Rather than guess again, the threshold was removed
-and the metric is marked unmeasured — the same failure mode this postmortem is
-about would otherwise be repeated in the other direction, by asserting on a
-number whose meaning is unknown.
+**Resolved, and it makes the point better than the open version did.** gRPC
+time-to-first-quote reported a p95 that reproduced the hold duration to four
+significant figures. Rather than guess at k6's scheduler a third time, it was
+measured outside k6 with a probe that opens a real stream and timestamps the
+first message off the socket. The real p95 is **16.9 ms**. The harness had
+been reporting ~30,000 ms — off by three orders of magnitude.
+
+Getting there cost two more instrument bugs, both of which blamed the server:
+
+4. The probe iterated the pipe with `for line in proc.stdout`, whose read-ahead
+   buffer never returns on a long-lived stream. All 25 samples timed out while
+   the same server delivered 70,000 quotes to k6 in the same run.
+5. The probe discarded grpcurl's stderr, so an `Unauthenticated` error read as
+   "no quote received". The cause was not an auth defect: grpcurl makes a
+   reflection call first, `-H` applied the signed headers to both, and the
+   nonce was spent on reflection — the replay guard working exactly as
+   designed against a client that signed one nonce and made two requests.
+
+Five instrument bugs, every one of which initially looked like a defect in the
+system under test. The habit that fixed this faster than the earlier ones was
+printing the tool's own error output on the failure path. Without it, bug 5
+would have read as another streaming-path mystery.
