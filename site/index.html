@@ -1,0 +1,567 @@
+<title>Tapeline Tape</title>
+<style>
+  :root {
+    --ground:        #FBFAF7;
+    --surface:       #FFFFFF;
+    --surface-sunk:  #F2F0EA;
+    --rule:          #DFDBD1;
+    --rule-strong:   #C3BDAF;
+    --ink:           #161D26;
+    --ink-soft:      #47535F;
+    --ink-faint:     #7C8791;
+    --amber:         #A9682A;
+    --amber-wash:    #F6EADA;
+    --teal:          #1F6F63;
+    --vermilion:     #A63D28;
+    --shadow:        0 1px 2px rgba(22,29,38,.06), 0 8px 24px rgba(22,29,38,.05);
+
+    --display: Georgia, "Iowan Old Style", "Times New Roman", serif;
+    --body: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:       #0D1521;
+      --surface:      #141F2E;
+      --surface-sunk: #0A111B;
+      --rule:         #24344A;
+      --rule-strong:  #3A4E69;
+      --ink:          #EBEEF2;
+      --ink-soft:     #A2B0C0;
+      --ink-faint:    #6B7B8D;
+      --amber:        #E8A33D;
+      --amber-wash:   #2A2113;
+      --teal:         #4FB3A2;
+      --vermilion:    #E0705A;
+      --shadow:       0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.3);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground:       #0D1521;
+    --surface:      #141F2E;
+    --surface-sunk: #0A111B;
+    --rule:         #24344A;
+    --rule-strong:  #3A4E69;
+    --ink:          #EBEEF2;
+    --ink-soft:     #A2B0C0;
+    --ink-faint:    #6B7B8D;
+    --amber:        #E8A33D;
+    --amber-wash:   #2A2113;
+    --teal:         #4FB3A2;
+    --vermilion:    #E0705A;
+    --shadow:       0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.3);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 16px;
+    line-height: 1.6;
+    margin: 0;
+    padding: 0 20px 96px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 940px; margin: 0 auto; }
+
+  /* ---- masthead ---- */
+  .masthead {
+    display: flex; flex-direction: column; gap: 14px;
+    padding: 56px 0 26px;
+    border-bottom: 2px solid var(--ink);
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px; letter-spacing: .16em; text-transform: uppercase;
+    color: var(--amber);
+  }
+  h1 {
+    font-family: var(--display);
+    font-size: clamp(38px, 7vw, 62px);
+    line-height: 1.02; margin: 0; font-weight: 400;
+    letter-spacing: -.02em; text-wrap: balance;
+  }
+  .standfirst {
+    font-size: 18px; color: var(--ink-soft); margin: 0;
+    max-width: 60ch; text-wrap: pretty;
+  }
+
+  /* ---- ticker tape ---- */
+  .tape {
+    margin: 0 0 40px;
+    border-bottom: 1px solid var(--rule);
+    background: var(--surface-sunk);
+    overflow: hidden;
+  }
+  .tape-inner {
+    display: flex; gap: 34px; padding: 11px 0;
+    font-family: var(--mono); font-size: 12.5px;
+    white-space: nowrap;
+    width: max-content;
+    animation: slide 44s linear infinite;
+  }
+  @keyframes slide { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+  @media (prefers-reduced-motion: reduce) {
+    .tape-inner { animation: none; }
+    .tape { overflow-x: auto; }
+  }
+  .tick { color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+  .tick b { color: var(--ink); font-weight: 600; }
+  .tick .up { color: var(--teal); }
+
+  /* ---- headline figures ---- */
+  .figures {
+    display: grid; gap: 1px;
+    grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
+    background: var(--rule); border: 1px solid var(--rule);
+    margin: 0 0 56px;
+  }
+  .fig { background: var(--surface); padding: 20px 18px; }
+  .fig dt {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--ink-faint); margin: 0 0 8px;
+  }
+  .fig dd {
+    margin: 0; font-family: var(--display); font-size: 30px;
+    line-height: 1; font-variant-numeric: tabular-nums;
+  }
+  .fig .unit { font-size: 14px; color: var(--ink-soft); font-family: var(--body); }
+
+  /* ---- sections ---- */
+  section { margin: 0 0 54px; }
+  h2 {
+    font-family: var(--display); font-weight: 400;
+    font-size: 27px; line-height: 1.2; margin: 0 0 6px;
+    letter-spacing: -.01em; text-wrap: balance;
+  }
+  .sub { color: var(--ink-soft); margin: 0 0 22px; max-width: 62ch; font-size: 15.5px; }
+  p { max-width: 65ch; }
+
+  /* ---- tables ---- */
+  .scroll { overflow-x: auto; border: 1px solid var(--rule); background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-size: 14.5px; min-width: 460px; }
+  th, td { padding: 11px 15px; text-align: left; border-bottom: 1px solid var(--rule); }
+  thead th {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--ink-faint); font-weight: 500;
+    background: var(--surface-sunk);
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+  .num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  tfoot td {
+    font-weight: 700; border-top: 2px solid var(--rule-strong);
+    background: var(--surface-sunk);
+  }
+  .venue { font-family: var(--mono); font-size: 13px; }
+
+  /* severity stripe */
+  .sev { border-left: 3px solid transparent; }
+  .sev-ok   { border-left-color: var(--teal); }
+  .sev-warn { border-left-color: var(--amber); }
+  .sev-bad  { border-left-color: var(--vermilion); }
+  .bad  { color: var(--vermilion); font-weight: 600; }
+  .good { color: var(--teal); font-weight: 600; }
+
+  /* ---- pull quote / finding ---- */
+  .finding {
+    border: 1px solid var(--rule); border-left: 3px solid var(--amber);
+    background: var(--amber-wash);
+    padding: 22px 24px; margin: 24px 0 0;
+  }
+  .finding p { margin: 0; max-width: 64ch; }
+  .finding strong { font-weight: 700; }
+
+  /* ---- chart ---- */
+  .chart-frame {
+    border: 1px solid var(--rule); background: var(--surface);
+    padding: 16px 16px 10px; box-shadow: var(--shadow);
+  }
+  canvas { display: block; width: 100%; height: 168px; }
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 18px; margin-top: 10px;
+    font-family: var(--mono); font-size: 11px; color: var(--ink-faint);
+  }
+
+  /* ---- proof grid ---- */
+  .proof { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(232px, 1fr)); }
+  .card {
+    border: 1px solid var(--rule); background: var(--surface);
+    padding: 17px 18px; display: flex; flex-direction: column; gap: 7px;
+  }
+  .card h3 {
+    margin: 0; font-size: 14px; font-weight: 600; letter-spacing: -.005em;
+  }
+  .card .val {
+    font-family: var(--display); font-size: 25px; line-height: 1;
+    font-variant-numeric: tabular-nums;
+  }
+  .card p { margin: 0; font-size: 13.5px; color: var(--ink-soft); }
+  .chip {
+    align-self: flex-start; font-family: var(--mono); font-size: 10px;
+    letter-spacing: .1em; text-transform: uppercase;
+    padding: 3px 7px; border: 1px solid var(--teal); color: var(--teal);
+  }
+
+  /* ---- bug list ---- */
+  ol.bugs { list-style: none; counter-reset: b; padding: 0; margin: 0; }
+  ol.bugs li {
+    counter-increment: b; border-bottom: 1px solid var(--rule);
+    padding: 14px 0 14px 46px; position: relative; max-width: 68ch;
+  }
+  ol.bugs li::before {
+    content: counter(b, decimal-leading-zero);
+    position: absolute; left: 0; top: 15px;
+    font-family: var(--mono); font-size: 11.5px; color: var(--amber);
+  }
+  ol.bugs li:last-child { border-bottom: 0; }
+  ol.bugs b { font-weight: 600; }
+  ol.bugs span { color: var(--ink-soft); }
+
+  /* ---- links ---- */
+  .links { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); }
+  a.link {
+    display: flex; flex-direction: column; gap: 3px; text-decoration: none;
+    border: 1px solid var(--rule); background: var(--surface);
+    padding: 14px 16px; color: var(--ink);
+    transition: border-color .15s ease, transform .15s ease;
+  }
+  a.link:hover { border-color: var(--amber); transform: translateY(-1px); }
+  a.link:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+  a.link .u { font-family: var(--mono); font-size: 12px; color: var(--amber); word-break: break-all; }
+  a.link .d { font-size: 13px; color: var(--ink-soft); }
+
+  footer {
+    margin-top: 60px; padding-top: 20px; border-top: 1px solid var(--rule);
+    font-size: 13px; color: var(--ink-faint); max-width: 68ch;
+  }
+  code {
+    font-family: var(--mono); font-size: .88em;
+    background: var(--surface-sunk); padding: 1px 5px; border: 1px solid var(--rule);
+  }
+</style>
+
+<div class="wrap">
+  <header class="masthead">
+    <div class="eyebrow">Distributed market data · measured, not asserted</div>
+    <h1>Tapeline</h1>
+    <p class="standfirst">
+      Bitcoin trades on many exchanges at once, and they never quite agree on the
+      price. This watches four feeds simultaneously, keeps a live picture of what
+      is for sale at what price, and can rebuild any past moment from history.
+      Every number below came from running it.
+    </p>
+  </header>
+</div>
+
+<div class="tape">
+  <div class="tape-inner" id="tape"></div>
+</div>
+
+<div class="wrap">
+  <dl class="figures">
+    <div class="fig">
+      <dt>Observed flow</dt>
+      <dd>$5,712<span class="unit"> /sec</span></dd>
+    </div>
+    <div class="fig">
+      <dt>Sustained</dt>
+      <dd>370<span class="unit"> msg/sec</span></dd>
+    </div>
+    <div class="fig">
+      <dt>Peak</dt>
+      <dd>654<span class="unit"> msg/sec</span></dd>
+    </div>
+    <div class="fig">
+      <dt>Events dropped</dt>
+      <dd class="good">0</dd>
+    </div>
+  </dl>
+
+  <section>
+    <h2>What the market actually did</h2>
+    <p class="sub">
+      8,000 real trades across three exchanges, captured in one 509-second window.
+      $2.9M of crypto changed hands while the system watched.
+    </p>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Venue</th><th>Symbol</th>
+            <th class="num">Trades</th><th class="num">Units</th><th class="num">Notional</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td class="venue">binance</td><td>BTC-USD</td><td class="num">3,891</td><td class="num">22.7988</td><td class="num">$1,471,393</td></tr>
+          <tr><td class="venue">binance</td><td>ETH-USD</td><td class="num">1,474</td><td class="num">387.8275</td><td class="num">$743,796</td></tr>
+          <tr><td class="venue">coinbase</td><td>BTC-USD</td><td class="num">1,947</td><td class="num">4.1324</td><td class="num">$266,448</td></tr>
+          <tr><td class="venue">kraken</td><td>ETH-USD</td><td class="num">140</td><td class="num">99.0791</td><td class="num">$189,845</td></tr>
+          <tr><td class="venue">kraken</td><td>BTC-USD</td><td class="num">145</td><td class="num">2.0368</td><td class="num">$131,300</td></tr>
+          <tr><td class="venue">coinbase</td><td>ETH-USD</td><td class="num">403</td><td class="num">53.7362</td><td class="num">$102,934</td></tr>
+        </tbody>
+        <tfoot>
+          <tr><td colspan="2">Total</td><td class="num">8,000</td><td class="num">—</td><td class="num">$2,905,716</td></tr>
+        </tfoot>
+      </table>
+    </div>
+    <div class="finding">
+      <p>
+        Binance carried <strong>27&times; Kraken's volume</strong> on BTC in the same
+        window. Building against a single exchange would have meant picking wrong
+        most of the time — which is the whole argument for fanning in several feeds.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <h2>The finding that averages would have hidden</h2>
+    <p class="sub">
+      Time from the exchange's own timestamp to arrival. The median says these
+      three venues are comparable. They are not.
+    </p>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Venue</th><th class="num">p50</th><th class="num">p95</th><th>Verdict</th></tr>
+        </thead>
+        <tbody>
+          <tr class="sev sev-ok">
+            <td class="venue">binance</td><td class="num">63.6 ms</td>
+            <td class="num good">73.8 ms</td><td>Tight distribution</td>
+          </tr>
+          <tr class="sev sev-warn">
+            <td class="venue">coinbase</td><td class="num">77.5 ms</td>
+            <td class="num bad">12,801 ms</td><td>165&times; its median</td>
+          </tr>
+          <tr class="sev sev-bad">
+            <td class="venue">kraken</td><td class="num">40.5 ms</td>
+            <td class="num bad">49,179 ms</td><td>Best median, worst tail</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="finding">
+      <p>
+        Kraken has the <strong>fastest median and a p95 of 49 seconds</strong>.
+        Reporting "average latency around 60 ms" would have been arithmetically
+        true and operationally useless. The tail is where a market data system
+        actually fails, and only a distribution shows it.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Throughput, sampled every five seconds</h2>
+    <p class="sub">
+      23 consecutive samples against live venues. Mean 370 msg/sec, peak 654 —
+      a range, because a single reading would have been a guess.
+    </p>
+    <div class="chart-frame">
+      <canvas id="spark" aria-label="Throughput samples ranging from 193 to 654 messages per second, mean 370"></canvas>
+      <div class="legend">
+        <span>&#9679; per-sample rate</span>
+        <span>&#9472; mean 370/sec</span>
+        <span>peak 654/sec</span>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Prices disagree, and that is the point</h2>
+    <p class="sub">Last trade on each venue, same asset, near-simultaneous.</p>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Asset</th><th class="num">Binance</th><th class="num">Coinbase</th><th class="num">Kraken</th><th class="num">Spread</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>BTC</td><td class="num">$64,496.01</td><td class="num">$64,446.29</td><td class="num">$64,446.70</td><td class="num">7.7 bps</td></tr>
+          <tr><td>ETH</td><td class="num">$1,916.01</td><td class="num">$1,914.74</td><td class="num">$1,915.23</td><td class="num">6.6 bps</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      A <strong>$50 gap on Bitcoin</strong> between two exchanges at the same moment.
+      Not free money — fees and transfer time consume 7 bps easily — but it is exactly
+      the signal the divergence detector exists to find. These are last-trade prices
+      at slightly different instants rather than simultaneous quotes, so treat the
+      figure as an approximation.
+    </p>
+  </section>
+
+  <section>
+    <h2>Proven in CI, not on a laptop</h2>
+    <p class="sub">
+      Five workflows run on every push. Each number below is reproduced by a
+      named workflow rather than remembered from a good day.
+    </p>
+    <div class="proof">
+      <div class="card">
+        <span class="chip">Exactly-once</span>
+        <div class="val">3 / 0</div>
+        <h3>Checkpoints completed / failed</h3>
+        <p>Avg 83 ms, 14.5 KB of state. The transactional sink commits on checkpoint, so clean checkpoints are what make the claim measured.</p>
+      </div>
+      <div class="card">
+        <span class="chip">Backfill</span>
+        <div class="val">225 &rarr; 0</div>
+        <h3>Windows replayed, fields mismatched</h3>
+        <p>Every window computed by both the live path and the Iceberg replay agrees on open, high, low, close, volume, VWAP and count.</p>
+      </div>
+      <div class="card">
+        <span class="chip">Streaming</span>
+        <div class="val">70,564</div>
+        <h3>Quotes to 60 subscribers</h3>
+        <p>Zero failed streams. Cold time to first quote: 16.9 ms at p95.</p>
+      </div>
+      <div class="card">
+        <span class="chip">Architecture</span>
+        <div class="val">113 vs 61 ms</div>
+        <h3>Monolith vs per-topic checkpoint</h3>
+        <p>And five stages in one failure domain against two. The refactor was made on evidence, not instinct.</p>
+      </div>
+      <div class="card">
+        <span class="chip">Topic layout</span>
+        <div class="val">9.61&times;</div>
+        <h3>Read amplification</h3>
+        <p>A consumer wanting trades pulls 9.6&times; the bytes from one shared topic — far worse than the 3&times; a record count implies.</p>
+      </div>
+      <div class="card">
+        <span class="chip">Ingestion</span>
+        <div class="val">271,172</div>
+        <h3>Events published, zero dropped</h3>
+        <p>Four venues connected simultaneously, no decode errors and no publish errors.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Seven things that broke</h2>
+    <p class="sub">
+      Written up as postmortems in the repo. Five are about measurements lying
+      rather than the system failing — which turned out to be the more useful
+      lesson.
+    </p>
+    <ol class="bugs">
+      <li><b>Binance trade sides were inverted.</b> <span>Go matches JSON keys case-insensitively when no exact match exists, so <code>"M"</code> silently bound to <code>BuyerIsMaker</code> and flipped the aggressor on every trade.</span></li>
+      <li><b>59% of Coinbase trades were dropped.</b> <span>One sequence number belongs to the frame, not to each trade inside it.</span></li>
+      <li><b>Scala collections never survived Flink.</b> <span>Kryo does not round-trip them across an operator boundary. No unit test can catch this — in-process there is no serialization at all.</span></li>
+      <li><b>A probe printed "0 quotes" on every run.</b> <span>It called a Kafka tool removed in 7.7, got an empty string, and turned that into a confident zero. Two real bugs were fixed while chasing a number that was never measuring anything.</span></li>
+      <li><b>A latency metric reported 30,000 ms.</b> <span>The true value was 16.9 ms. The harness was timing its own hold, three orders of magnitude off.</span></li>
+      <li><b>The gap detector cried wolf on every Ethereum block.</b> <span>Log indices count all contracts in a block, so a four-token subscription can never see them contiguous. An alarm that fires constantly on healthy data hides the two real ones.</span></li>
+      <li><b>The server could not start on its own defaults.</b> <span>The OLAP URL said ClickHouse while the driver property said Postgres. No test had ever started the real application, so the path an operator actually gets was the only one never exercised.</span></li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>See it running</h2>
+    <div class="links">
+      <a class="link" href="https://github.com/danielajen/tapeline">
+        <span class="u">github.com/danielajen/tapeline</span>
+        <span class="d">Source, five CI workflows, all seven postmortems</span>
+      </a>
+      <a class="link" href="https://github.com/danielajen/tapeline/actions">
+        <span class="u">/actions</span>
+        <span class="d">Every run above, reproducible — open one and read the log</span>
+      </a>
+      <a class="link" href="https://github.com/danielajen/tapeline/blob/main/docs/MEASUREMENTS.md">
+        <span class="u">docs/MEASUREMENTS.md</span>
+        <span class="d">Each number and the workflow that produces it</span>
+      </a>
+      <a class="link" href="https://github.com/danielajen/tapeline/blob/main/docs/POSTMORTEM.md">
+        <span class="u">docs/POSTMORTEM.md</span>
+        <span class="d">The seven failures, written up in full</span>
+      </a>
+    </div>
+  </section>
+
+  <footer>
+    Market figures come from one 509-second capture against Binance, Coinbase,
+    Kraken and Ethereum mainnet and describe that window, not the market in
+    general. CI figures are refreshed automatically — the badge below reflects
+    the most recent run, and every workflow can be re-run by anyone with a fork.
+    <br><br>
+    <img src="https://github.com/danielajen/tapeline/actions/workflows/ci.yml/badge.svg" alt="CI status">
+    <img src="https://github.com/danielajen/tapeline/actions/workflows/flink-e2e.yml/badge.svg" alt="Flink end-to-end status">
+    <img src="https://github.com/danielajen/tapeline/actions/workflows/backfill-proof.yml/badge.svg" alt="Backfill proof status">
+  </footer>
+</div>
+
+<script>
+  // Ticker tape. Content is duplicated so the marquee wraps seamlessly at -50%.
+  const ticks = [
+    ['BTC binance', '64,496.01', 1], ['BTC coinbase', '64,446.29', 0],
+    ['BTC kraken', '64,446.70', 0], ['ETH binance', '1,916.01', 1],
+    ['ETH coinbase', '1,914.74', 0], ['ETH kraken', '1,915.23', 0],
+    ['BTC spread', '7.7 bps', 0], ['ETH spread', '6.6 bps', 0],
+    ['flow', '$5,712/sec', 0], ['dropped', '0 events', 1]
+  ];
+  const tape = document.getElementById('tape');
+  const row = ticks.map(([l, v, up]) =>
+    `<span class="tick">${l} <b class="${up ? 'up' : ''}">${v}</b></span>`).join('');
+  tape.innerHTML = row + row;
+
+  // Throughput samples: 23 consecutive five-second readings, msg/sec.
+  const data = [318,451,456,429,193,228,280,329,303,284,449,332,562,274,304,654,304,408,292,306,214,578,577];
+  const MEAN = 370;
+
+  const cv = document.getElementById('spark');
+  function draw() {
+    const css = getComputedStyle(document.documentElement);
+    const amber = css.getPropertyValue('--amber').trim();
+    const rule  = css.getPropertyValue('--rule').trim();
+    const faint = css.getPropertyValue('--ink-faint').trim();
+
+    const dpr = window.devicePixelRatio || 1;
+    const w = cv.clientWidth, h = cv.clientHeight;
+    cv.width = w * dpr; cv.height = h * dpr;
+    const g = cv.getContext('2d');
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, w, h);
+
+    const padL = 34, padR = 8, padT = 12, padB = 20;
+    const iw = w - padL - padR, ih = h - padT - padB;
+    const max = 700, min = 0;
+    const x = i => padL + (i / (data.length - 1)) * iw;
+    const y = v => padT + ih - ((v - min) / (max - min)) * ih;
+
+    // gridlines
+    g.strokeStyle = rule; g.lineWidth = 1;
+    g.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
+    g.fillStyle = faint; g.textAlign = 'right';
+    [0, 200, 400, 600].forEach(v => {
+      g.beginPath(); g.moveTo(padL, y(v) + .5); g.lineTo(w - padR, y(v) + .5); g.stroke();
+      g.fillText(String(v), padL - 7, y(v) + 3);
+    });
+
+    // mean line
+    g.save(); g.setLineDash([4, 4]); g.strokeStyle = faint;
+    g.beginPath(); g.moveTo(padL, y(MEAN) + .5); g.lineTo(w - padR, y(MEAN) + .5); g.stroke();
+    g.restore();
+
+    // area
+    const grad = g.createLinearGradient(0, padT, 0, padT + ih);
+    grad.addColorStop(0, amber + '3D'); grad.addColorStop(1, amber + '00');
+    g.beginPath(); g.moveTo(x(0), y(data[0]));
+    data.forEach((v, i) => g.lineTo(x(i), y(v)));
+    g.lineTo(x(data.length - 1), padT + ih); g.lineTo(x(0), padT + ih); g.closePath();
+    g.fillStyle = grad; g.fill();
+
+    // line
+    g.beginPath(); g.moveTo(x(0), y(data[0]));
+    data.forEach((v, i) => g.lineTo(x(i), y(v)));
+    g.strokeStyle = amber; g.lineWidth = 2; g.lineJoin = 'round'; g.stroke();
+
+    // peak marker
+    const pi = data.indexOf(Math.max(...data));
+    g.beginPath(); g.arc(x(pi), y(data[pi]), 3.5, 0, Math.PI * 2);
+    g.fillStyle = amber; g.fill();
+  }
+  draw();
+  addEventListener('resize', draw);
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', draw);
+</script>
