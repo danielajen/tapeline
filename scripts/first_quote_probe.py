@@ -66,18 +66,30 @@ def sample(addr, key_id, secret, symbols, timeout):
 
     started = time.monotonic()
     proc = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1
     )
     try:
-        # The first non-empty stdout line is the first message. grpcurl prints
-        # a JSON object per received message, so this fires on arrival rather
-        # than at stream close - which is precisely what the k6 path could not
-        # do.
-        for line in proc.stdout:
+        # readline(), not `for line in proc.stdout`.
+        #
+        # Iterating a pipe uses an internal read-ahead buffer that does not
+        # return until the buffer fills or the stream closes. On a long-lived
+        # stream that never happens, so the first 25 samples all timed out
+        # against a server that was concurrently delivering 70,000 quotes to
+        # k6. The measurement was wrong, not the server - again.
+        while time.monotonic() - started < timeout:
+            line = proc.stdout.readline()
+            if not line:
+                break
             if line.strip():
                 return (time.monotonic() - started) * 1000.0
-            if time.monotonic() - started > timeout:
-                break
+        # Surface why nothing arrived rather than silently counting a failure.
+        # A signing or reflection error goes to stderr and is otherwise
+        # invisible, which is how the first version of this probe reported
+        # "no quote" for a problem that had nothing to do with quotes.
+        proc.kill()
+        err = (proc.stderr.read() or "").strip()
+        if err:
+            print(f"  grpcurl: {err.splitlines()[0][:200]}", file=sys.stderr)
         return None
     finally:
         proc.kill()
