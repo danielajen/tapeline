@@ -556,3 +556,35 @@ window. Now it is measured.
 **Scope:** the warehouse is a local Hadoop catalog, not S3. The property under
 test is that a bounded replay through the same operators reproduces the same
 aggregates; the filesystem behind the catalog is not part of that property.
+
+## Live ingestion (real venues, real chain)
+
+Measured on a MacBook Air against Binance, Coinbase, Kraken and Ethereum
+mainnet simultaneously. No synthetic input anywhere in this table.
+
+Throughput over a 60-second window:
+
+| Topic | Events | Rate |
+|---|---|---|
+| `md.book.v1` | 12,965 | 216.1/s |
+| `md.trades.v1` | 5,838 | 97.3/s |
+| `md.chain.v1` | 914 | 15.2/s |
+| **Total** | **19,717** | **328.6/s** |
+
+Health over the full 7-minute run (~113,000 events):
+
+| | |
+|---|---|
+| Decode errors | **0** |
+| Publish errors | **0** |
+| Sequence discontinuities | **2** (both venue-side, real) |
+| Chain gaps | **0** |
+
+The book rate is roughly twice the trade rate, which is the ratio the job
+layout measurement assumed and is worth noting as independent confirmation:
+that assumption came from the design doc, not from data, until now.
+
+Ethereum contributes the smallest volume by far. That is the nature of the
+source — a block every twelve seconds against exchange feeds that push
+continuously — and it is why the chain feed cannot be gap-detected the same
+way a venue feed is. See the postmortem below.

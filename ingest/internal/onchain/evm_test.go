@@ -2,6 +2,7 @@ package onchain
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -77,9 +78,35 @@ func TestDecodeERC20Transfer(t *testing.T) {
 		t.Errorf("token address not normalized: %q", x.Token)
 	}
 
-	// blockNumber*10000 + logIndex gives the gap detector something monotonic.
-	if ev.Sequence != 20_000_000*10000+42 {
-		t.Errorf("sequence = %d", ev.Sequence)
+	// The sequence is the block, not blockNumber*10000+logIndex. A log index
+	// counts every log in the block across all contracts, and this
+	// subscription covers four token addresses, so those indices can never be
+	// contiguous. Running it against mainnet produced an unbroken stream of
+	// false "sequence discontinuity" warnings within seconds.
+	if ev.Sequence != 20_000_000 {
+		t.Errorf("sequence = %d, want the block number", ev.Sequence)
+	}
+}
+
+func TestOnlyFirstLogOfABlockCarriesASequence(t *testing.T) {
+	e := NewEVM("ethereum", "wss://example.invalid", nil, nil)
+
+	// Two logs in one block, then one in the next. A blockchain cannot skip a
+	// log within a block, so a second log is not new sequencing information -
+	// stamping the block on it would make the detector see a duplicate. What
+	// is worth detecting is a missed BLOCK, which is real data loss.
+	first := decodeOne(t, e, 20_000_000, 42)
+	second := decodeOne(t, e, 20_000_000, 43)
+	next := decodeOne(t, e, 20_000_001, 7)
+
+	if first.Sequence != 20_000_000 {
+		t.Errorf("first log of a block: sequence = %d, want 20000000", first.Sequence)
+	}
+	if second.Sequence != model.NoSequence {
+		t.Errorf("second log of the same block: sequence = %d, want NoSequence", second.Sequence)
+	}
+	if next.Sequence != 20_000_001 {
+		t.Errorf("first log of the next block: sequence = %d, want 20000001", next.Sequence)
 	}
 }
 
@@ -225,4 +252,29 @@ func TestTopicToAddressHandlesShortInput(t *testing.T) {
 	if got := topicToAddress("0x1234"); got != "0x1234" {
 		t.Errorf("short topic = %q, want it returned unchanged", got)
 	}
+}
+
+// decodeOne decodes a single Transfer log at a given block and log index.
+// Written because the block-sequencing rule is about the relationship between
+// consecutive logs, which a single fixed payload cannot express.
+func decodeOne(t *testing.T, e *EVM, blockNum, logIdx int64) model.Event {
+	t.Helper()
+
+	var log map[string]any
+	if err := json.Unmarshal([]byte(usdcTransferLog), &log); err != nil {
+		t.Fatalf("fixture: %v", err)
+	}
+	result := log["params"].(map[string]any)["result"].(map[string]any)
+	result["blockNumber"] = fmt.Sprintf("0x%x", blockNum)
+	result["logIndex"] = fmt.Sprintf("0x%x", logIdx)
+
+	raw, _ := json.Marshal(log)
+	events, err := e.Decode(raw, testNow)
+	if err != nil {
+		t.Fatalf("decode block %d log %d: %v", blockNum, logIdx, err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("decode block %d log %d: got %d events, want 1", blockNum, logIdx, len(events))
+	}
+	return events[0]
 }

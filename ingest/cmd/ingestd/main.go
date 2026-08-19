@@ -166,7 +166,15 @@ func run() error {
 		BatchSize:     cfg.BatchSize,
 		FlushInterval: cfg.FlushInterval,
 		// Coinbase sequences the connection, not the product stream.
-		ConnectionScopedVenues: map[string]bool{venue.VenueCoinbase: true},
+		// Coinbase stamps one counter per socket across every product and
+		// channel. An EVM chain sequences by block, which is likewise one
+		// counter for the whole feed rather than per token. Both must
+		// collapse to a single key or the detector splits one counter across
+		// several streams and reports gaps that are not there.
+		ConnectionScopedVenues: map[string]bool{
+			venue.VenueCoinbase: true,
+			cfg.OnchainChain:    true,
+		},
 		OnResync: func(v string, key gap.Key) {
 			// Forget the stream so the next snapshot re-establishes the
 			// baseline instead of gap-alerting forever.

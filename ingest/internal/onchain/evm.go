@@ -51,6 +51,10 @@ type EVM struct {
 	// addresses restricts the subscription. Empty means every contract,
 	// which on mainnet is a firehose — the default is the tokens map.
 	addresses []string
+
+	// lastBlock is the highest block seen, so only the first log of each new
+	// block carries a sequence. See the comment on the sequence below.
+	lastBlock int64
 }
 
 // NewEVM builds a decoder for a chain. Pass nil tokens to use DefaultTokens.
@@ -195,10 +199,37 @@ func (e *EVM) Decode(raw []byte, now time.Time) ([]model.Event, error) {
 		IngestTimeUS: now.UnixMicro(),
 	}
 
-	// blockNumber * 10000 + logIndex is globally ordered within a chain, which
-	// gives the gap detector something monotonic to work with even though
-	// logs arrive per-block rather than per-message.
-	seq := blockNum*10000 + logIdx
+	// The sequence is the BLOCK, and only the first log of each block carries
+	// one. Everything after it in the same block is NoSequence.
+	//
+	// This was blockNumber*10000 + logIndex, described as "globally ordered
+	// within a chain". It is globally ordered and it is not contiguous, which
+	// is what a gap detector needs. Two independent reasons:
+	//
+	//   - logIndex counts every log in the block, across all contracts. This
+	//     subscription covers four token addresses, so the vast majority of
+	//     indices belong to contracts we never asked for.
+	//   - the detector keys on (venue, symbol, channel), which splits one
+	//     block-wide counter across four tokens, so each sees only its own
+	//     scattered subset.
+	//
+	// Running it live produced a continuous stream of WARN "sequence
+	// discontinuity" lines within seconds - every one a false positive, on a
+	// feed that was losing nothing. That is worse than no detection: it
+	// trains you to ignore the alert that means something.
+	//
+	// A blockchain cannot skip a log within a block. What it can do, and what
+	// actually matters, is deliver block N+2 after block N - a missed block,
+	// which is real data loss. Sequencing on blocks detects exactly that.
+	//
+	// This is the same mistake as the Coinbase envelope sequence
+	// (POSTMORTEM 2): a counter scoped to the frame, stamped on every event
+	// inside it.
+	seq := int64(model.NoSequence)
+	if blockNum > e.lastBlock {
+		e.lastBlock = blockNum
+		seq = blockNum
+	}
 
 	return []model.Event{{
 		Kind:     model.KindChainTransfer,

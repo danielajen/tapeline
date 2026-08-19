@@ -576,3 +576,41 @@ Five instrument bugs, every one of which initially looked like a defect in the
 system under test. The habit that fixed this faster than the earlier ones was
 printing the tool's own error output on the failure path. Without it, bug 5
 would have read as another streaming-path mystery.
+
+## Postmortem 7: a gap detector that cried wolf on every block
+
+**Impact.** Within seconds of the first live Ethereum connection, a continuous
+stream of WARN `sequence discontinuity` lines — every one a false positive, on
+a feed that was losing nothing.
+
+**What was wrong.** Chain events were sequenced as
+`blockNumber * 10000 + logIndex`, commented as giving the detector "something
+monotonic to work with". It is monotonic. It is not contiguous, which is what a
+gap detector needs, for two independent reasons:
+
+- `logIndex` counts every log in the block across all contracts. This
+  subscription covers four token addresses, so the overwhelming majority of
+  indices belong to contracts never subscribed to.
+- The detector keys on `(venue, symbol, channel)`, splitting one block-wide
+  counter across four tokens so each sees a scattered subset of its own.
+
+**The fix.** The sequence is the block, and only the first log of each block
+carries one; the rest are `NoSequence`. A blockchain cannot skip a log within a
+block. What it can do, and what actually matters, is deliver block N+2 after
+block N — a missed block is real data loss, and that is now what gets detected.
+The chain is also added to `ConnectionScopedVenues`, because a block counter
+describes the whole feed rather than any one token.
+
+Chain gap warnings went from hundreds in seconds to **zero across 113,000
+events**, with venue-side detection still firing twice on real discontinuities.
+
+**Why this one matters more than it looks.** This is the same mistake as the
+Coinbase envelope sequence in Postmortem 2 — a counter scoped to the frame,
+stamped on every event inside it — made a second time in a different file by
+someone who had already fixed it once. The lesson that did not transfer is
+that a sequence number has a scope, and the scope is a property of the source,
+not of the thing you would like to detect.
+
+An alarm that fires constantly on healthy data is worse than no alarm. It
+trains you to ignore the one that means something, and there were two real
+discontinuities in this run that would have been invisible in the noise.
