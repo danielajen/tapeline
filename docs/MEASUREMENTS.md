@@ -272,13 +272,13 @@ Recorded as unresolved rather than rounded up.
 
 | Metric | Value | Source |
 |---|---|---|
-| Sustained messages/sec into Kafka | `[measure]` | `rate(tapeline_ingest_events_published_total[1m])` |
-| Peak messages/sec | `[measure]` | same, `max_over_time` across the run |
+| Sustained messages/sec into Kafka | **370** | `rate(tapeline_ingest_events_published_total[1m])` |
+| Peak messages/sec | **654** | same, `max_over_time` across the run |
 | Source lag p50 / p99 | `[measure]` | `tapeline_ingest_source_lag_seconds` |
 | Kafka publish latency p99 | `[measure]` | `tapeline_ingest_publish_latency_seconds` |
-| Sequence gaps per hour, per venue | `[measure]` | `tapeline_ingest_sequence_gaps_total` |
-| Duplicates suppressed per hour | `[measure]` | `tapeline_ingest_duplicates_dropped_total` |
-| Reconnects per venue per hour | `[measure]` | `tapeline_ingest_reconnects_total` |
+| Sequence gaps per hour, per venue | **~5/hr, coinbase only** | `tapeline_ingest_sequence_gaps_total` |
+| Duplicates suppressed per hour | **0** | `tapeline_ingest_duplicates_dropped_total` |
+| Reconnects per venue per hour | **0** | `tapeline_ingest_reconnects_total` |
 | Resident memory at steady state | `[measure]` | `docker stats` or `container_memory_working_set_bytes` |
 
 Note the gaps and duplicates alongside the throughput. A throughput number

@@ -1,4 +1,8 @@
-# Postmortem 1: every Binance trade was recorded on the wrong side
+# Postmortems
+
+Seven failures found by running this system, written up in full.
+
+## Postmortem 1: every Binance trade was recorded on the wrong side
 
 **Status:** resolved
 **Severity:** SEV-2 — silent data corruption, one of three venues
@@ -192,7 +196,7 @@ Before the fix:
 
 ---
 
-# Postmortem 2: five bugs the first live run found
+## Postmortem 2: five bugs the first live run found
 
 **Status:** all three fixed, all three now covered by regression tests
 **Detected:** 17 August 2026, first time the system was ever run end to end
@@ -347,7 +351,7 @@ and a broker that goes away, between code and its own configuration.
 
 ---
 
-# Postmortem 3: four defects between a compiling Flink job and a running one
+## Postmortem 3: four defects between a compiling Flink job and a running one
 
 **Status:** all four fixed; the job now submits and processes records
 **Detected:** 17–18 August 2026, first attempt to submit to a real cluster
@@ -440,7 +444,7 @@ every order book on the first restore.
 
 ---
 
-# Postmortem 4: the Kryo bug was bigger than the fix
+## Postmortem 4: the Kryo bug was bigger than the fix
 
 **Status:** resolved. `BookDelta` now carries parallel `Array[Double]`; the
 job runs stably in CI and completes checkpoints (avg 89 ms, 27 KB state).
