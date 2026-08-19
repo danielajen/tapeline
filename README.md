@@ -6,6 +6,10 @@ processes them as one exactly-once stream, detects cross-exchange price
 divergence, and serves both live gRPC streams and historical queries from a
 lakehouse.
 
+**[See the measured results →](https://danielajen.github.io/tapeline/)** — what
+it observed across four live feeds, and what running it actually proved. Every
+figure there links to the CI workflow that reproduces it.
+
 Five tiers, three languages, one wire format:
 
 ```
